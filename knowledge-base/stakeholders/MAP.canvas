@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {"id": "p0", "type": "text", "x": -200, "y": -700, "width": 400, "height": 100, "color": "5", "text": "# Pawline\n\n**Stakeholder map** — exec, regional, board"},
+
+    {"id": "g_exec", "type": "group", "x": -1000, "y": -500, "width": 2000, "height": 400, "label": "Executive team", "color": "5"},
+    {"id": "p_ceo", "type": "file", "x": -100, "y": -440, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-sarah-okafor.md"},
+    {"id": "p_coo", "type": "file", "x": -950, "y": -260, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/marcus-kim.md"},
+    {"id": "p_cfo", "type": "file", "x": -620, "y": -260, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/tom-brennan.md"},
+    {"id": "p_cmo", "type": "file", "x": -290, "y": -260, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-elena-vasquez.md"},
+    {"id": "p_cio", "type": "file", "x": 40, "y": -260, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/priya-shah.md"},
+    {"id": "p_cpo", "type": "file", "x": 370, "y": -260, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/lisa-rodriguez.md"},
+    {"id": "p_ma",  "type": "file", "x": 700, "y": -260, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-james-okwu.md"},
+
+    {"id": "g_reg", "type": "group", "x": -1000, "y": -50, "width": 1600, "height": 250, "label": "Regional medical directors", "color": "4"},
+    {"id": "p_west", "type": "file", "x": -950, "y": 10, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-rachel-chen.md"},
+    {"id": "p_mtn",  "type": "file", "x": -460, "y": 10, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-michael-torres.md"},
+    {"id": "p_sw",   "type": "file", "x": 30, "y": 10, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-jennifer-park.md"},
+    {"id": "t_west", "type": "text", "x": -950, "y": 145, "width": 280, "height": 50, "text": "**West** — CA + NV (30 clinics)"},
+    {"id": "t_mtn",  "type": "text", "x": -460, "y": 145, "width": 280, "height": 50, "text": "**Mountain** — CO + UT (19 clinics)"},
+    {"id": "t_sw",   "type": "text", "x": 30, "y": 145, "width": 280, "height": 50, "text": "**Southwest** — AZ + TX (31 clinics)"},
+
+    {"id": "g_board", "type": "group", "x": -300, "y": 280, "width": 900, "height": 250, "label": "Board", "color": "6"},
+    {"id": "p_lansky", "type": "file", "x": -250, "y": 340, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/david-lansky.md"},
+    {"id": "p_foster", "type": "file", "x": 60, "y": 340, "width": 280, "height": 120, "file": "knowledge-base/stakeholders/dr-amelia-foster.md"},
+    {"id": "t_board", "type": "text", "x": 370, "y": 340, "width": 220, "height": 120, "color": "6", "text": "**Open seat**\n\nIndependent director search active for Q3 2026."}
+  ],
+  "edges": [
+    {"id": "e_ceo_coo", "fromNode": "p_ceo", "toNode": "p_coo", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_ceo_cfo", "fromNode": "p_ceo", "toNode": "p_cfo", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_ceo_cmo", "fromNode": "p_ceo", "toNode": "p_cmo", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_ceo_cio", "fromNode": "p_ceo", "toNode": "p_cio", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_ceo_cpo", "fromNode": "p_ceo", "toNode": "p_cpo", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_ceo_ma",  "fromNode": "p_ceo", "toNode": "p_ma",  "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_cmo_west", "fromNode": "p_cmo", "toNode": "p_west", "label": "clinical", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_cmo_mtn",  "fromNode": "p_cmo", "toNode": "p_mtn",  "label": "clinical", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_cmo_sw",   "fromNode": "p_cmo", "toNode": "p_sw",   "label": "clinical", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_coo_west", "fromNode": "p_coo", "toNode": "p_west", "label": "ops dotted", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_coo_mtn",  "fromNode": "p_coo", "toNode": "p_mtn",  "label": "ops dotted", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_coo_sw",   "fromNode": "p_coo", "toNode": "p_sw",   "label": "ops dotted", "fromSide": "bottom", "toSide": "top"},
+    {"id": "e_lansky_ceo", "fromNode": "p_lansky", "toNode": "p_ceo", "label": "sponsor", "fromSide": "top", "toSide": "bottom"},
+    {"id": "e_foster_ceo", "fromNode": "p_foster", "toNode": "p_ceo", "label": "independent", "fromSide": "top", "toSide": "bottom"}
+  ]
+}
