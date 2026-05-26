@@ -14,6 +14,27 @@ This is **Pawline Veterinary Partners' company-wide knowledge management system*
 
 This repo also operates as an **Obsidian vault**. Open the repo root in Obsidian and the wiki, MOC, and Bases render natively. See `knowledge-base/CONVENTIONS.md` for the per-note frontmatter contract and `MOC.canvas` for the operating-system map.
 
+## Ecosystem Position
+
+**What this repo is**: Engagement vault for Pawline Veterinary Partners — demo / reference deployment showing Cortex as company-wide KMS. Two-tier visibility: `knowledge-base/` (all-staff visible) + `internal/` (exec/board-only).
+
+**Track**: Engagement vault (Delivery side) — demo / reference.
+
+**Position**:
+- Depends on: `@cohortl/core` (consumed by the broader platform; this vault is content-only)
+- Depended on by: `cortex-portal/vendor/cortex-pawline/` (vendored for demo rendering)
+- Public surface: demo route via cortex-portal
+
+**Related context for Claude Code sessions**:
+- Canonical ecosystem map: [`~/core/docs/ecosystem-map.md`](~/core/docs/ecosystem-map.md)
+- Most-relevant ADRs: ADR-017 (IP boundary), ADR-021 (umbrella)
+- Sibling reference: `cortex-proforce` (real-client equivalent of this shape)
+
+**Common session patterns here**:
+- Demo content additions in `knowledge-base/` (concepts, decisions, evidence, playbooks)
+- Refining the company-wide-KMS demo narrative
+- Vault-shape ADRs in `docs/decisions/`
+
 ## How to read this repo
 
 1. **`MOC.canvas`** — operating-system map (open in Obsidian or the portal)
