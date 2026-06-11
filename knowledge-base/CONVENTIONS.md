@@ -24,12 +24,15 @@ knowledge-base/
 ├── evidence/            atomic, cite-able findings (one paragraph each)
 ├── stakeholders/        exec team, regional leadership, board
 ├── meetings/            internal cadence records (board, ops, clinical, M&A)
+├── interviews/          raw Atlas interview captures (stakeholder-approved transcripts)
 ├── deliverables/        company-produced artifacts (annual plan, manuals, framework docs)
 ├── playbooks/           how-we-do-it procedural docs
 └── policies/            formal policy texts
 ```
 
 Wiki-style links across folders work (Obsidian resolves by name). Glossary stays the alphabetical entry-point; `concepts/` is the linked layer.
+
+`interviews/` holds raw captures drained from the Atlas stakeholder-interview surface (cortex-portal `scripts/drain-capture-queue.ts`). Every file there was approved by its stakeholder after reviewing the transcript; stakeholders appear ONLY as role-based refs (`clinic-manager-1`), never names. Frontmatter `type: interview-capture, status: raw`. Raw captures are compile-pipeline input: do not cite them directly — promote findings into `evidence/` or `concepts/` and link back.
 
 ---
 
