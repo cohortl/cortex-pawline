@@ -5,6 +5,8 @@ The institutional knowledge brain of an 80-clinic veterinary services rollup. Fo
 This repo doubles as an **Obsidian vault**. Open the repo root in Obsidian to render the MOC, the Bases below, and wikilinks across `knowledge-base/`.
 
 > **Visibility boundary**: `knowledge-base/` is all-staff visible. `internal/` is exec/board-only and path-excluded from the portal export. See `CLAUDE.md` for the full contract.
+>
+> Repo structure & visibility tiers: see `core/docs/cortex-vault-architecture.md` (canonical).
 
 ## At a glance
 
