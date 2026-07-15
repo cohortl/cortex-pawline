@@ -1,21 +1,23 @@
-# internal/ — exec & board-only material
+# internal/ — TEAM-facing tier
 
-Path-excluded from the all-staff portal export. Owner: CEO + COO + CFO + CMO + CIO + CPO + Head of M&A + Board.
+> **Audience:** the cohortl delivery team (via GitHub org access).
+> **Committed** to the cohortl remote. **Never** served on a client portal route.
+> See core `ADR-011-vault-visibility-tiers`.
 
-## Subfolders
+## What goes here (committed, team can see)
 
-- `ma-pipeline/` — active M&A targets being tracked, named, with pipeline-stage detail
-- `compensation/` — actual comp ranges and equity grant detail by role / region
-- `vendor-negotiations/` — active negotiation status with key vendors
-- `performance/` — exec-team performance reviews + board feedback
-- `pricing/` — strategic pricing analysis, competitor benchmarking, planned changes
+- Analysis, positioning, BD context for this engagement
+- Working emails (markdown), meeting-prep, going-in agendas
+- Stakeholder notes — our internal take, pitch angles, sensitivities
+- Sequencing tactics, pricing/comp context
+- **Text transcripts** → `internal/transcripts/` (team-fine)
 
-## Why this folder exists
+## What does NOT go here → use `raw/` (local-only, gitignored)
 
-The all-staff `knowledge-base/` is the operating brain of Pawline. The `internal/` folder is the strategic brain — material that everyone needs to know exists but that only a small subset should see in detail.
+- Audio/video **recordings** (`.mp3`, `.mp4`, `.vtt`) — always `raw/`, never committed
+- Real PII, credentials, unredacted call/data exports
+- Bulk source-data dumps, contracts, binary source files
 
-The same content boundary that an Abeto-engagement repo uses for "client-visible vs Abeto-internal" is reframed here as "all-staff vs exec-only." Most company KMSes need this split.
-
-## Access
-
-Path-based exclusion in `portal.config.ts`. Read access requires named SSO group membership. Audited monthly per [[guardrails]].
+**The rule:** recordings and PII → `raw/`. Team prose and text transcripts →
+`internal/`. When in doubt → `raw/` (you can promote later; you can't un-push).
+Client-visible content goes in `knowledge-base/`, not here.

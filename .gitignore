@@ -1,5 +1,30 @@
+# --- Dependencies / build ---
 node_modules/
-.env
-.env.local
+dist/
 .DS_Store
 *.log
+
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+.npmrc
+
+# --- Obsidian workspace state (local, per-developer) ---
+.obsidian/workspace*.json
+.obsidian/cache
+.obsidian/.trash/
+
+# --- Portal vendoring (local symlink/clone target) ---
+vendor/
+
+# --- Ephemeral runtime state ---
+state/
+
+# =====================================================================
+# VISIBILITY TIERS (see core ADR-011-vault-visibility-tiers)
+#   knowledge-base/  -> CLIENT-facing (committed, served by portal)
+#   internal/        -> TEAM-facing   (committed, NEVER on client routes)
+#   raw/             -> LOCAL-ONLY    (gitignored below — never leaves this machine)
+# =====================================================================
+raw/
