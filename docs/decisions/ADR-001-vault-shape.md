@@ -7,6 +7,12 @@ decision_maker: dr-sarah-okafor
 
 # ADR-001: Vault shape and visibility boundary
 
+> **SUPERSEDED by core `ADR-011-vault-visibility-tiers` (2026-07-15).** The two-tier
+> model below is replaced by a three-tier model: `knowledge-base/` (client,
+> portal-served), `internal/` (team, **committed** via GitHub org access, never
+> client-facing), `raw/` (local-only, gitignored). The client boundary is the portal
+> render layer, not git. Retained for history.
+
 **Status.** Accepted 2026-04-15.
 
 ## Context
