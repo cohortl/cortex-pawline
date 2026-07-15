@@ -23,8 +23,12 @@ state/
 
 # =====================================================================
 # VISIBILITY TIERS (see core ADR-011-vault-visibility-tiers)
-#   knowledge-base/  -> CLIENT-facing (committed, served by portal)
+#   knowledge-base/  -> CLIENT-facing (committed, served by portal loader)
+#   intake/          -> TEAM-facing   (committed working docs: discovery notes,
+#                       call transcripts, entity profiles — NEVER client-facing)
 #   internal/        -> TEAM-facing   (committed, NEVER on client routes)
 #   raw/             -> LOCAL-ONLY    (gitignored below — never leaves this machine)
+#   deliverables/    -> legacy client surface (old-layout vaults; published to
+#                       Supabase, not vault-rendered). New vaults use knowledge-base/.
 # =====================================================================
 raw/
