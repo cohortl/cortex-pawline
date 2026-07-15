@@ -1,6 +1,14 @@
-// Export policy for cortex-portal render of Pawline.
-// Default-deny: nothing leaves the all-staff surface unless explicitly allowed.
-// See docs/decisions/ADR-001-vault-shape.md for the visibility contract.
+// Client allowlist for the cortex-portal client-facing render.
+//
+// SEMANTICS (core ADR-011-vault-visibility-tiers): `publish.paths` is the
+// *client allowlist* — the exact set of files the portal may serve to the
+// client on /{slug}/* routes. It is NOT a team/deny switch. internal/ is not
+// "denied publish"; it simply is not client content (team-facing, committed,
+// served to the team via GitHub, never on a client route).
+//
+// The client boundary is the portal render layer, not git. This manifest is
+// client-auditable and validated at build time (assert-vault-boundary.sh) to
+// declare only client-tier paths.
 
 export default {
   client: {
@@ -20,21 +28,6 @@ export default {
       "config/connectors.md",
       "config/guardrails.md",
       "config/systems.yaml",
-    ],
-    deny: [
-      "internal/**",
-      "config/access.yaml",
-      "config/integrations.yaml",
-      "config/routing-rules.md",
-      "deployment/**",
-      "scripts/**",
-      "docs/plans/**",
-      "docs/decisions/**",
-      "state/**",
-      "*.env*",
-      "package.json",
-      "pnpm-lock.yaml",
-      "tsconfig.json",
     ],
   },
 } as const;
