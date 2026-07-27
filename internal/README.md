@@ -10,11 +10,11 @@
 - Working emails (markdown), meeting-prep, going-in agendas
 - Stakeholder notes — our internal take, pitch angles, sensitivities
 - Sequencing tactics, pricing/comp context
-- **Text transcripts** → `internal/transcripts/` (team-fine)
+- **Text transcripts** (`.md`, `.txt`, `.vtt`, `.srt`, `.json`) → `internal/transcripts/` (team-fine)
 
 ## What does NOT go here → use `raw/` (local-only, gitignored)
 
-- Audio/video **recordings** (`.mp3`, `.mp4`, `.vtt`) — always `raw/`, never committed
+- Audio/video **recordings** (`.mp3`, `.mp4`, `.wav`, `.m4a`) — always `raw/`, never committed
 - Real PII, credentials, unredacted call/data exports
 - Bulk source-data dumps, contracts, binary source files
 

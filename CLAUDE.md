@@ -12,7 +12,7 @@
 >
 > | New artifact | Destination | Tier |
 > |---|---|---|
-> | Audio/video recording (.mp3/.mp4/.vtt) | `raw/meetings/` | local-only |
+> | Audio/video recording (.mp3/.mp4/.wav/.m4a) | `raw/meetings/` | local-only |
 > | Text transcript | `internal/transcripts/` | exec |
 > | Polished meeting note / deliverable | `knowledge-base/meetings/` (or the right `knowledge-base/` subfolder) | all-staff |
 > | Exec/board material (M&A, comp, vendor negotiations, pricing) | `internal/` | exec |
