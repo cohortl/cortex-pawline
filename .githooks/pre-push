@@ -1,0 +1,598 @@
+#!/usr/bin/env bash
+# Cortex engagement-vault safety & privacy gate — git pre-push hook.
+#
+# The deterministic layer of the 3-layer enforcement model (core ADR-012):
+#   pre-push hook (this)   -> protects the LOCAL-ONLY tier + the org remote at
+#                             the source: secrets, structured PII, raw/,
+#                             recordings, cross-tenant names, unredacted config,
+#                             KB notes embedding team-only content.
+#   portal assert-vault-boundary.sh -> protects the CLIENT (nothing outside
+#                             knowledge-base/ ever renders).
+#   /repo-audit skill      -> semantic sweep the mechanical gates can't do.
+#
+# Runs on EVERY `git push` from a cortex-{client} vault, any user, agent or
+# manual. Blocking policy (ADR-012): mechanical / high-confidence checks
+# hard-fail; anything that needs judgment only warns. Blocking on "this *reads*
+# sensitive" would be false-positive hell and breed a --no-verify habit.
+#
+# Blocking dimensions: 1 (tier triage), 2 (secrets), 3 (SSN/credit-card),
+#   5 (cross-tenant, client surface), 6 (transclusion leak), 8 (config
+#   redaction), 9 (explicit confidential markers), 12 (cross-tenant file path).
+# Warning dimensions:  3 (bulk PII lists), 4 (PHI), 7 (internal links),
+#   9 (status: draft), 10 (binary metadata), 11 (transcript side-talk),
+#   12 (cross-tenant mention in team-tier bodies).
+#
+# Bypass: set CORTEX_GATE_OVERRIDE=1 (optionally CORTEX_GATE_OVERRIDE_REASON=...).
+# The override is LOUD and LOGGED to stderr — bypass is possible, never silent.
+#
+# Self-contained bash (no core repo / npm dep required at runtime) so it works
+# on any clone, including Justin's machine. Mirrors the regex/scan style of the
+# portal's scripts/check-tenant-leaks.sh + scripts/assert-vault-boundary.sh.
+
+set -uo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "pre-push: not inside a git repo — skipping cortex gate." >&2
+  exit 0
+}
+cd "$REPO_ROOT"
+
+BASE=$(basename "$REPO_ROOT")            # e.g. cortex-proforce
+SLUG="${BASE#cortex-}"                    # e.g. proforce
+
+# --- Loud, logged override -------------------------------------------------
+if [[ "${CORTEX_GATE_OVERRIDE:-}" == "1" ]]; then
+  who=$(git config user.name 2>/dev/null || echo "${USER:-unknown}")
+  email=$(git config user.email 2>/dev/null || echo "unknown")
+  reason="${CORTEX_GATE_OVERRIDE_REASON:-<none given>}"
+  {
+    echo "════════════════════════════════════════════════════════════════"
+    echo "  CORTEX SAFETY GATE OVERRIDDEN on $BASE"
+    echo "  by:     $who <$email>"
+    echo "  reason: $reason"
+    echo "  The pre-push safety/privacy checks were SKIPPED. This is logged."
+    echo "════════════════════════════════════════════════════════════════"
+  } >&2
+  exit 0
+fi
+
+# --- Resolve the tree we're about to push ----------------------------------
+# pre-push gets "<local ref> <local sha> <remote ref> <remote sha>" on stdin.
+# We scan the committed content of the tip being pushed (git ls-tree / git grep
+# against a tree) — that is exactly what leaves the machine. Ranges (remote..
+# local) are captured for gitleaks so it doesn't re-scan already-pushed history.
+ZERO="0000000000000000000000000000000000000000"
+TIP=""
+RANGES=()
+while read -r _localref localsha _remoteref remotesha; do
+  [[ -z "${localsha:-}" ]] && continue
+  [[ "$localsha" == "$ZERO" ]] && continue     # branch deletion — nothing to scan
+  TIP="$localsha"
+  if [[ -n "${remotesha:-}" && "$remotesha" != "$ZERO" ]]; then
+    RANGES+=("${remotesha}..${localsha}")       # incremental
+  else
+    RANGES+=("$localsha")                        # new branch — full tip
+  fi
+done
+
+# stdin may be empty (some invocations) — fall back to HEAD.
+[[ -z "$TIP" ]] && TIP=$(git rev-parse HEAD 2>/dev/null || echo "")
+if [[ -z "$TIP" ]]; then
+  echo "pre-push: no commits to check — passing." >&2
+  exit 0
+fi
+TIP=$(git rev-parse "$TIP")
+
+# --- Client-facing surface (layout-aware) ----------------------------------
+# New-layout vaults render knowledge-base/; older vaults (no knowledge-base/)
+# publish deliverables/ directly (HTML uploaded to the portal). The client-
+# surface checks below (dims 4/5/6/9/10) must scan WHICHEVER exists — scoping
+# them to knowledge-base/ alone silently no-ops on an old-layout vault and
+# reports a false "clean" (it would inspect zero client-facing bytes).
+# Top-level `deliverables/` only matches old-layout vaults; new-layout ones keep
+# deliverables under knowledge-base/deliverables/, so this never double-counts.
+CLIENT_DIRS=()
+for _d in knowledge-base deliverables; do
+  git ls-tree -r --name-only "$TIP" -- "$_d" 2>/dev/null | grep -q . && CLIENT_DIRS+=("$_d")
+done
+# Discovery-stage vault with nothing published yet: fall back to the (absent)
+# knowledge-base path so the greps below match nothing — correct, and keeps the
+# array non-empty for bash 3.2 + `set -u`.
+[[ ${#CLIENT_DIRS[@]} -eq 0 ]] && CLIENT_DIRS=("knowledge-base")
+
+# --- Violation accumulators -------------------------------------------------
+BLOCKS=""   ; nblock=0
+WARNS=""    ; nwarn=0
+
+add_block() { BLOCKS+="$1"$'\n' ; nblock=$((nblock+1)); }
+add_warn()  { WARNS+="$1"$'\n'  ; nwarn=$((nwarn+1)); }
+
+# Luhn check on a digit string (returns 0 = valid card checksum).
+luhn_ok() {
+  awk -v s="$1" 'BEGIN{
+    n=length(s); sum=0; alt=0;
+    for(j=n;j>=1;j--){ d=substr(s,j,1)+0; if(alt){d*=2; if(d>9)d-=9} sum+=d; alt=!alt }
+    exit (sum%10==0)?0:1
+  }'
+}
+
+# tracked file paths in the pushed tree
+tracked() { git ls-tree -r --name-only "$TIP" -- "$@" 2>/dev/null; }
+
+# grep the pushed tree; strip the "<sha>:" rev prefix for clean output.
+# usage: tree_grep <extended-regex> [-- pathspec...]
+tree_grep() {
+  local pat="$1"; shift
+  git grep -I -n -E -e "$pat" "$TIP" "$@" 2>/dev/null | sed "s/^${TIP}://"
+}
+tree_grep_i() {
+  local pat="$1"; shift
+  git grep -I -n -i -E -e "$pat" "$TIP" "$@" 2>/dev/null | sed "s/^${TIP}://"
+}
+tree_grep_fixed_i() {
+  local needle="$1"; shift
+  git grep -I -n -i -F -e "$needle" "$TIP" "$@" 2>/dev/null | sed "s/^${TIP}://"
+}
+
+# ===========================================================================
+# Dimension 1 — Tier triage (BLOCK)
+# raw/ committed · recordings tracked anywhere · bulk-export dirs tracked.
+# ===========================================================================
+raw_tracked=$(tracked 'raw' || true)
+if [[ -n "$raw_tracked" ]]; then
+  add_block "[1 tier] raw/ is LOCAL-ONLY but these files are committed:
+$(sed 's/^/    /' <<<"$raw_tracked")
+    Remedy: git rm -r --cached the paths; confirm raw/ is in .gitignore."
+fi
+
+rec_tracked=$(tracked | grep -iE '\.(mp3|mp4|m4a|wav|mov|mkv|aac)$' || true)
+if [[ -n "$rec_tracked" ]]; then
+  add_block "[1 tier] recording/binary media is tracked (belongs in raw/, local-only):
+$(sed 's/^/    /' <<<"$rec_tracked")
+    Remedy: git rm --cached; move under raw/meetings/."
+fi
+
+bulk_tracked=$(tracked | grep -iE '(^|/)(lace-export|recordings)/' || true)
+if [[ -n "$bulk_tracked" ]]; then
+  add_block "[1 tier] bulk-export directory is tracked (belongs in raw/):
+$(sed 's/^/    /' <<<"$bulk_tracked")
+    Remedy: git rm -r --cached; relocate under raw/."
+fi
+
+# ===========================================================================
+# Dimension 2 — Secrets & credentials (BLOCK)
+# gitleaks is the engine; a bundled regex set is the fallback (warns loudly).
+# ===========================================================================
+# .env* tracked (except .env.example) — cheap, always run.
+env_tracked=$(tracked | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$' || true)
+if [[ -n "$env_tracked" ]]; then
+  add_block "[2 secrets] .env file is tracked (should never be committed):
+$(sed 's/^/    /' <<<"$env_tracked")
+    Remedy: git rm --cached; keep only .env.example with placeholders."
+fi
+
+GITLEAKS_CFG=""
+[[ -f "$REPO_ROOT/.gitleaks.toml" ]] && GITLEAKS_CFG="$REPO_ROOT/.gitleaks.toml"
+
+if command -v gitleaks >/dev/null 2>&1; then
+  for range in "${RANGES[@]:-$TIP}"; do
+    gl_args=(git --no-banner --redact --exit-code 1)
+    [[ -n "$GITLEAKS_CFG" ]] && gl_args+=(--config "$GITLEAKS_CFG")
+    if [[ "$range" == *..* ]]; then
+      gl_out=$(gitleaks "${gl_args[@]}" --log-opts="$range" 2>&1)
+    else
+      gl_out=$(gitleaks "${gl_args[@]}" 2>&1)
+    fi
+    if [[ $? -ne 0 ]]; then
+      add_block "[2 secrets] gitleaks found credential(s) in $range (values redacted):
+$(grep -E 'Finding|File|Line|Secret|RuleID' <<<"$gl_out" | sed 's/^/    /' | head -40)
+    Remedy: remove the secret, rotate it, rewrite history if already committed."
+    fi
+  done
+else
+  # Fallback regex set — high-PRECISION vendor key shapes only. The generic
+  # api-key/token/secret keyword rules are deliberately omitted here: without
+  # gitleaks' entropy scoring they fire on things like portal magic-link
+  # `?token=<uuid>` share URLs (false-positive BLOCK). gitleaks covers those
+  # properly — this fallback just guarantees the obvious vendor secrets never
+  # slip through when the real engine is missing.
+  add_warn "[2 secrets] gitleaks NOT installed — using the weaker bundled regex fallback.
+    Install the real engine:  brew install gitleaks"
+  # JWT (eyJ…) is NOT in the block set: in these vaults `eyJ…` almost always
+  # appears as a Supabase signed-URL token inside a published `shared_url`/share
+  # link (recorded on purpose in the URL index) — blocking it is a false
+  # positive. It gets a WARN below instead. gitleaks' own JWT rule is allowlisted
+  # for the same case in .gitleaks.toml.
+  SECRET_RE='(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|sk-ant-[A-Za-z0-9-]{20,}|ghp_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(aws_secret_access_key|client[_-]?secret|password)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9/_+=-]{12,})'
+  # Drop base64 data-URI blobs (embedded audio/image in HTML deliverables) — a
+  # long base64 string trips vendor-key shapes by chance. Truncate display so a
+  # matched giant line can't flood the report.
+  sec_hits=$(tree_grep_i "$SECRET_RE" | grep -vE '^(\.githooks/|\.gitleaks\.toml:)' | grep -vE ';base64,|data:[a-z]+/[a-z0-9.+-]+;base64' | cut -c1-200 || true)
+  if [[ -n "$sec_hits" ]]; then
+    add_block "[2 secrets] high-confidence credential pattern(s) in committed content:
+$(sed 's/^/    /' <<<"$sec_hits" | head -40)
+    Remedy: remove + rotate the secret; move real creds to raw/ (local-only)."
+  fi
+fi
+
+# Signed share-URL tokens (…?token=eyJ…) — recorded on purpose in share indexes,
+# but worth a glance in case a non-share JWT slipped into prose. WARN, not block.
+jwt_url_hits=$(tree_grep '[?&]token=eyJ[A-Za-z0-9_.-]{20,}' || true)
+if [[ -n "$jwt_url_hits" ]]; then
+  add_warn "[2 secrets] signed share-URL token(s) in committed content (expected in
+    shared_url/share indexes; confirm none is a real session/API JWT):
+$(sed 's/^/    /' <<<"$jwt_url_hits" | sed -E 's/(token=eyJ[A-Za-z0-9_.-]{12}).*/\1…[redacted]/' | head -12)"
+fi
+
+# ===========================================================================
+# Dimension 3 — Structured PII (BLOCK on SSN / credit-card; WARN on bulk lists)
+# ===========================================================================
+# SSN — the two dashes make the shape specific enough without a word boundary
+# ('\b' is not portable across git grep's ERE engine).
+ssn_hits=$(tree_grep '[0-9]{3}-[0-9]{2}-[0-9]{4}' | grep -vE '^\.githooks/' || true)
+if [[ -n "$ssn_hits" ]]; then
+  add_block "[3 PII] SSN-shaped value(s) in committed content:
+$(sed 's/^/    /' <<<"$ssn_hits" | head -20)
+    Remedy: redact; PII belongs in raw/ (local-only), never committed."
+fi
+
+# Credit card — require the grouped 4-4-4-4 form, then Luhn-validate. Guard hard
+# against the two dominant false positives in these vaults: UUIDs in SQL seeds
+# (…-0000-0000-0000-0000, all-zero Luhn-valid) and base64 media blobs. Candidates
+# must be standalone tokens (not embedded in a longer hex/alnum run).
+UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+cc_lines=$(tree_grep '([0-9]{4}[ -]){3}[0-9]{4}' | grep -vE '^\.githooks/' || true)
+if [[ -n "$cc_lines" ]]; then
+  cc_hits=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    grep -qE "$UUID_RE" <<<"$line" && continue     # UUID line — not card data
+    grep -q ';base64,' <<<"$line" && continue      # embedded media blob
+    while IFS= read -r cand; do
+      digits=$(tr -cd '0-9' <<<"$cand")
+      [[ ${#digits} -ge 15 && ${#digits} -le 16 ]] || continue
+      [[ "$digits" =~ ^0+$ ]] && continue          # all-zeros placeholder
+      if luhn_ok "$digits"; then
+        cc_hits+="$(cut -c1-200 <<<"$line")"$'\n'; break
+      fi
+    done < <(grep -oE '(^|[^0-9A-Za-z_-])[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4}([^0-9A-Za-z_-]|$)' <<<"$line" | grep -oE '([0-9]{4}[ -]){3}[0-9]{4}')
+  done <<< "$cc_lines"
+  if [[ -n "$cc_hits" ]]; then
+    add_block "[3 PII] Luhn-valid credit-card number(s) in committed content:
+$(sed 's/^/    /' <<<"$cc_hits" | sort -u | head -20)
+    Remedy: redact immediately; card data must never be committed."
+  fi
+fi
+
+# Bulk email / phone lists → WARN (likely an export that belongs in raw/).
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  emails=$(git show "$TIP:$f" 2>/dev/null | grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | wc -l | tr -d ' ')
+  if [[ "${emails:-0}" -gt 25 ]]; then
+    add_warn "[3 PII] $f contains $emails email addresses — looks like a bulk list.
+    Consider: contact exports belong in raw/ (local-only), not committed."
+  fi
+done < <(tracked | grep -iE '\.(md|csv|txt|json|yaml|yml)$' || true)
+
+# ===========================================================================
+# Dimension 4 — PHI / healthcare (WARN; health clients only)
+# ===========================================================================
+case "$SLUG" in
+  lumate-health|rhythm-healthcare|platinum-dermatology|spear-pt|curalink|curalinc)
+# Bare "PHI" is dropped on purpose — in a health-governance vault it is the
+    # TOPIC (policy prose about handling PHI), not an identifier. Warn only on
+    # patterns that look like actual patient identifiers.
+    phi_hits=$(tree_grep_i '(MRN|medical record number|ICD-?10 code|diagnosis code|patient (id|name|dob)|date of birth)' -- "${CLIENT_DIRS[@]}" || true)
+    if [[ -n "$phi_hits" ]]; then
+      add_warn "[4 PHI] health-client vault — possible patient identifiers in the client surface:
+$(sed 's/^/    /' <<<"$phi_hits" | head -20)
+    Run /repo-audit for a dedicated PHI pass; move identifiers to raw/ if real."
+    fi
+    ;;
+esac
+
+# ===========================================================================
+# Dimension 5 — Cross-tenant contamination (BLOCK on other clients' names/slugs)
+# Reads the client registry at runtime (never commits other clients' names into
+# this vault — that would itself be a leak). Registry absent -> WARN + skip.
+#
+# The folder below is `cohortl-admin`; the GitHub repo it came from is
+# `greenbits-dev/cohortl-private` (renamed 2026-07-28 — it is deliberately a
+# solo repo, not company-org infrastructure). The folder/repo mismatch is
+# INTENTIONAL. Do not rename the folder to match: this default path is baked
+# into every already-installed vault hook, and a missing registry downgrades
+# this check to a warning without blocking the push. Renaming would silently
+# disable cross-tenant detection across all vaults. Override with
+# CORTEX_CLIENT_REGISTRY if you genuinely need a different location.
+# ===========================================================================
+REGISTRY="${CORTEX_CLIENT_REGISTRY:-$HOME/cohortl/cohortl-admin/engagements/_registry.md}"
+# Every OTHER vault slug in the registry. Populated in the dimension 5 loop
+# below and consumed by dimension 12 — kept as a bare `<slug>` list (no
+# `cortex-` prefix) because dimension 12 matches both forms.
+other_vaults=()
+if [[ -f "$REGISTRY" ]]; then
+  # Build the block needle set from the registry table:
+  #   - other vaults' slugs in the specific `cortex-<slug>` form (near-zero FP)
+  #   - other clients' MULTI-WORD canonical names (specific enough to block)
+  # Single-word / short names are left to /repo-audit's fuzzy pass (avoids FP).
+  block_needles=()
+  while IFS='|' read -r _lead name _anon vault _rest; do
+    name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    vault=$(echo "$vault" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$name" || "$name" == "Client" ]] && continue      # header
+    [[ "$name" =~ ^-+$ ]] && continue                         # separator
+    core="${name%% (*}"                                       # strip parenthetical
+    lc_name=$(echo "$name" | tr '[:upper:]' '[:lower:]')
+    [[ "$lc_name" == *fictional* ]] && continue               # pawline showcase
+    [[ "$vault" == "cortex-pawline" ]] && continue
+    if [[ -n "$vault" && "$vault" != "—" && "$vault" != "$BASE" ]]; then
+      block_needles+=("$vault")                               # cortex-<otherslug>
+      # cortex-portal is shared infrastructure, not a tenant: publishing
+      # scripts and shared_url rows name it everywhere by design.
+      [[ "$vault" != "cortex-portal" ]] && other_vaults+=("${vault#cortex-}")
+    fi
+    [[ "$vault" == "$BASE" ]] && continue                     # own client — skip name
+    if [[ "$core" == *" "* ]]; then
+      block_needles+=("$core")                                # multi-word canonical name
+    fi
+  done < <(grep -E '^\|' "$REGISTRY")
+
+  # Scope the BLOCK to the CLIENT-facing surface + config only. Two things stay
+  # out of the hard gate by design:
+  #   - docs/plans/ + root chrome (CLAUDE.md/README) reference sibling vaults as
+  #     structural templates ("mirror cortex-proforce's shape") — scaffolding.
+  #   - internal/ holds verbatim meeting transcripts + build plans that naturally
+  #     name other parties; those are the /repo-audit skill's judgment call, not a
+  #     mechanical block (blocking a verbatim transcript is wrong).
+  # The leak that MUST block is another client's name/system in this client's
+  # own knowledge-base/ or config/. One combined git grep (multiple -e) for speed.
+  if [[ ${#block_needles[@]} -gt 0 ]]; then
+    grep_args=()
+    for needle in "${block_needles[@]}"; do grep_args+=(-e "$needle"); done
+    hits=$(git grep -I -n -i -F "${grep_args[@]}" "$TIP" -- "${CLIENT_DIRS[@]}" config 2>/dev/null | sed "s/^${TIP}://" | cut -c1-200 || true)
+    if [[ -n "$hits" ]]; then
+      add_block "[5 cross-tenant] another engagement's identifier appears in this vault's client-facing content:
+$(sed 's/^/    /' <<<"$hits" | head -15)
+    Remedy: this is $BASE — remove references to other clients' names/systems
+    from knowledge-base/ + config/ (transcripts/build-plans in internal/ are the
+    /repo-audit skill's call; structural refs in docs/plans/ are fine)."
+    fi
+  fi
+else
+  add_warn "[5 cross-tenant] client registry not found ($REGISTRY) — cross-tenant
+    block skipped. Set CORTEX_CLIENT_REGISTRY, or run /repo-audit which does a
+    fuzzy cross-tenant pass."
+fi
+
+# ===========================================================================
+# Dimension 6 — Obsidian transclusion leak (BLOCK)
+# A knowledge-base note that embeds/links internal/ or raw/ pulls team-only
+# content into the client render.
+# ===========================================================================
+trans_hits=$(tree_grep '!?\[\[(internal|raw)/|\]\(\.\.?/*(internal|raw)/' -- "${CLIENT_DIRS[@]}" || true)
+if [[ -n "$trans_hits" ]]; then
+  add_block "[6 transclusion] a client-facing note embeds/links a non-client tier:
+$(sed 's/^/    /' <<<"$trans_hits" | head -20)
+    Remedy: client-facing notes must not reference internal/ or raw/ — inline the
+    needed content or drop the link."
+fi
+
+# ===========================================================================
+# Dimension 8 — Config redaction integrity (BLOCK)
+# Client-visible config subset must carry no raw creds/tokens.
+# ===========================================================================
+CFG_SECRET_RE='(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|sk-ant-[A-Za-z0-9-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(password|secret|token|api[_-]?key|client[_-]?secret|connection[_-]?string)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9/_+.-]{12,})'
+cfg_hits=$(tree_grep_i "$CFG_SECRET_RE" -- 'config/systems.yaml' 'config/connectors.md' 'config/org-map.md' || true)
+if [[ -n "$cfg_hits" ]]; then
+  add_block "[8 config] raw credential/token in a client-visible config file:
+$(sed 's/^/    /' <<<"$cfg_hits" | head -20)
+    Remedy: replace the value with a placeholder/ref; real creds live in raw/ or a
+    secret manager, never in the published config subset."
+fi
+
+# ===========================================================================
+# Dimension 9 — Confidential markers in KB (BLOCK explicit markers; WARN drafts)
+# ===========================================================================
+marker_hits=$(tree_grep 'CONFIDENTIAL|DO NOT SHARE|INTERNAL ONLY|status:[[:space:]]*(internal|private)' -- "${CLIENT_DIRS[@]}" || true)
+if [[ -n "$marker_hits" ]]; then
+  add_block "[9 markers] explicit confidential marker in the client-facing surface:
+$(sed 's/^/    /' <<<"$marker_hits" | head -20)
+    Remedy: this content is client-visible — move it to internal/ or remove the marker."
+fi
+# status: draft is a legitimate deliverable lifecycle state (see scaffold.md) — warn only.
+draft_hits=$(tree_grep 'status:[[:space:]]*draft' -- "${CLIENT_DIRS[@]}" || true)
+if [[ -n "$draft_hits" ]]; then
+  add_warn "[9 markers] draft-status note(s) under client-facing knowledge-base/:
+$(sed 's/^/    /' <<<"$draft_hits" | head -12)
+    Confirm these are ready for the client to see, or hold in internal/ until shared."
+fi
+
+# ===========================================================================
+# Dimension 10 — Document/binary metadata (WARN)
+# ===========================================================================
+ds_tracked=$(tracked | grep -E '(^|/)\.DS_Store$' || true)
+[[ -n "$ds_tracked" ]] && add_warn "[10 metadata] tracked .DS_Store file(s):
+$(sed 's/^/    /' <<<"$ds_tracked")
+    Remedy: git rm --cached; add .DS_Store to .gitignore."
+bin_kb=$(tracked -- "${CLIENT_DIRS[@]}" | grep -iE '\.(docx|pdf|jpg|jpeg|png|tiff)$' || true)
+[[ -n "$bin_kb" ]] && add_warn "[10 metadata] client-facing binary/image files may carry EXIF/author metadata:
+$(sed 's/^/    /' <<<"$bin_kb" | head -12)
+    Run /repo-audit to scrub, or check with exiftool before sharing."
+
+# ===========================================================================
+# Dimension 11 — Private side-talk in transcripts (WARN)
+# Recorders start before the client joins and stop after they drop, so a
+# transcript can open or close with a stretch where only Cohort L people are
+# on the line. That content is invisible in review (it looks like any other
+# turn) and has historically carried other clients' names, fee talk and
+# candid opinions about the client whose vault it sits in.
+#
+# Heuristic: in a speaker-labelled transcript, count Cohort L turns that occur
+# before the first externally-named speaker. Generic "Speaker N" labels and
+# recording bots are ignored (they are unattributed and often the bot itself).
+# Advisory only — deciding what is private is judgment, and blocking here
+# would breed a --no-verify habit (ADR-012 policy).
+# ===========================================================================
+INTERNAL_SPK='^(Christian|Krystian|Chris|David|Dave)( |$)|Birnbaum|Senye'
+sidetalk=""; unlabelled=""
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  body=$(git show "$TIP:$f" 2>/dev/null) || continue
+
+  # A "# Speaker key:" header maps Speaker N -> a real name. Resolve those
+  # first: an unresolved "Speaker 2" may well BE the client, and guessing
+  # produces false positives on every Otter export.
+  key=$(printf '%s\n' "$body" | grep -m1 -i '^#\{0,2\}[[:space:]]*Speaker key' || true)
+  resolve() { # $1 = raw label -> resolved name, or the label unchanged
+    local lbl="$1" n
+    [[ -z "$key" ]] && { printf '%s' "$lbl"; return; }
+    n=$(printf '%s' "$lbl" | sed -nE 's/^Speaker[[:space:]]+([0-9]+)$/\1/p')
+    [[ -z "$n" ]] && { printf '%s' "$lbl"; return; }
+    printf '%s' "$key" | sed -nE "s/.*\"Speaker $n\"[[:space:]]*=[[:space:]]*([A-Za-z][A-Za-z.' -]{1,30}).*/\1/p" \
+      | head -1 | grep . || printf '%s' "$lbl"
+  }
+
+  labels=$(printf '%s\n' "$body" | sed -nE \
+    -e 's/^\*\*([^*]{1,40})\*\*:.*/\1/p' \
+    -e 's/^([A-Z][A-Za-z0-9.'"'"' -]{1,30})[[:space:]]+[0-9]{1,2}:[0-9]{2}.*/\1/p' \
+    -e 's/^\[[0-9:.]+\][[:space:]]*([^:]{1,30}):.*/\1/p')
+  nl=$(printf '%s\n' "$labels" | grep -c '[A-Za-z]' || true)
+  if [[ "${nl:-0}" -lt 4 ]]; then unlabelled+="    $f (no usable speaker labels)"$'\n'; continue; fi
+
+  # Walk turns until the first speaker who is demonstrably NOT Cohort L.
+  pre=0; verdict="none"
+  while IFS= read -r raw; do
+    [[ -z "$raw" ]] && continue
+    lbl=$(resolve "$raw")
+    if [[ "$lbl" =~ ^(Recording|Unknown)  ]]; then continue; fi
+    if [[ "$lbl" =~ ^Speaker[[:space:]]+[0-9]+$ ]]; then verdict="ambiguous"; break; fi
+    if printf '%s' "$lbl" | grep -qE "$INTERNAL_SPK"; then pre=$((pre+1)); continue; fi
+    verdict="external"; break
+  done <<<"$labels"
+
+  if [[ "$verdict" == "ambiguous" ]]; then
+    [[ "$pre" -ge 3 ]] && unlabelled+="    $f ($pre Cohort L turns, then an unnamed \"Speaker N\" — cannot tell if that is the client)"$'\n'
+  elif [[ "$verdict" == "none" ]]; then
+    sidetalk+="    $f — no external speaker anywhere; this looks like an internal call, not a client meeting"$'\n'
+  elif [[ "$pre" -ge 3 ]]; then
+    sidetalk+="    $f — $pre Cohort L turns before the first external speaker"$'\n'
+  fi
+done < <({ tracked -- 'internal/transcripts' 'internal/meetings' 2>/dev/null; tracked 2>/dev/null | grep -iE 'transcript'; } | sort -u)
+if [[ -n "$sidetalk" ]]; then
+  add_warn "[11 side-talk] transcript(s) open with a Cohort L only stretch — check for pre-call chatter:
+$(printf '%s' "$sidetalk" | sort -u | head -12)
+    Recorders run before the client joins. Cut the opening stretch (and any tail
+    after they drop) before pushing. Check the derived meeting note too — the
+    summary usually carries the same content. Do not leave a note saying what was
+    removed; that leaks the same names."
+fi
+if [[ -n "$unlabelled" ]]; then
+  add_warn "[11 side-talk] transcript(s) with no usable speaker labels — cannot be checked automatically:
+$(printf '%s' "$unlabelled" | sort -u | head -8)
+    Absence of a warning here is not evidence these are clean. Skim the first and
+    last page by hand."
+fi
+
+# ===========================================================================
+# Dimension 12 — Cross-tenant slug outside the client surface
+#   (BLOCK on file PATHS · WARN on team-tier bodies)
+#
+# Why this exists on top of dimension 5. Dimension 5 blocks another client's
+# name/slug in knowledge-base/ + deliverables/ + config — the CLIENT-facing
+# surface — and deliberately exempts internal/ and intake/, because verbatim
+# transcripts and build plans naturally name other parties and blocking those
+# is wrong. That exemption is correct for BODIES and wrong for PATHS: in April
+# a SPEAR PT prospect walkthrough sat git-tracked at
+# cortex-lumate-health/intake/, and its own FILENAME carried the slug. Nothing
+# mechanical caught it for three months. A whole document filed under the wrong
+# tenant is a misfiling, not a mention, so the path form is a hard block.
+#
+# False-positive control:
+#   - `cortex-<slug>` matches any other vault (unambiguous by construction).
+#   - a BARE `<slug>` only counts when it is hyphenated (spear-pt,
+#     hidden-harbor, oxford-road). Single-token slugs (acs, pe, metro, latite)
+#     are far too collidable to match bare and are left to /repo-audit.
+#   - docs/plans/ (incl. archive/) and root chrome are exempt: they reference
+#     sibling vaults as structural templates, same carve-out as dimension 5.
+#   - docs/research/<subject>/ is exempt: that prefix is the declared convention
+#     for "this vault RESEARCHES that entity" (cortex-pe holds
+#     docs/research/hidden-harbor/ to seed its own KPI schema). It was renamed
+#     out of docs/clients/ on 2026-07-28 for exactly this reason — the old name
+#     made build inputs read as misfiled client files.
+#   - cortex-portal is excluded upstream (shared infrastructure, not a tenant).
+# ===========================================================================
+# cortex-portal is the multi-tenant RENDERER: data/<slug>/ per client is its
+# whole architecture, so a path check is meaningless there. Its client boundary
+# is enforced by scripts/assert-vault-boundary.sh instead (ADR-012 layer 2).
+if [[ "$BASE" == "cortex-portal" ]]; then other_vaults=(); fi
+
+if [[ ${#other_vaults[@]} -gt 0 ]]; then
+  path_pat=""; body_pat=""
+  for s in "${other_vaults[@]}"; do
+    [[ -z "$s" || "$s" == "$SLUG" ]] && continue
+    path_pat+="${path_pat:+|}cortex-${s}"
+    body_pat+="${body_pat:+|}cortex-${s}"
+    if [[ "$s" == *-* ]]; then                    # hyphenated → safe bare match
+      path_pat+="|(^|/)[^/]*${s}[^/]*"
+      body_pat+="|(^|[^A-Za-z0-9-])${s}([^A-Za-z0-9-]|$)"
+    fi
+  done
+
+  if [[ -n "$path_pat" ]]; then
+    # BLOCK: another tenant's slug in a tracked path.
+    path_hits=$(tracked \
+      | grep -viE '^(docs/plans/|docs/research/|CLAUDE\.md$|README\.md$|\.githooks/|\.gitleaks\.toml$)' \
+      | grep -iE "$path_pat" || true)
+    if [[ -n "$path_hits" ]]; then
+      add_block "[12 cross-tenant path] file(s) in this vault are NAMED for another engagement:
+$(sed 's/^/    /' <<<"$path_hits" | head -15)
+    This is $BASE. A document filed under another tenant's slug is misfiled, not
+    merely a mention — the SPEAR-in-Lumate case (2026-04, found 2026-07) looked
+    exactly like this. Remedy: git mv it into the correct cortex-{slug} vault,
+    or rename if the slug is coincidental. Structural refs belong in docs/plans/."
+    fi
+
+    # WARN: another tenant named in team-tier bodies. Judgment, so advisory —
+    # a verbatim transcript that names a competitor is legitimate content.
+    team_dirs=()
+    for _d in internal intake notes working; do
+      git ls-tree -r --name-only "$TIP" -- "$_d" 2>/dev/null | grep -q . && team_dirs+=("$_d")
+    done
+    if [[ ${#team_dirs[@]} -gt 0 ]]; then
+      body_hits=$(git grep -I -n -i -E -e "$body_pat" "$TIP" -- "${team_dirs[@]}" 2>/dev/null \
+        | sed "s/^${TIP}://" | cut -c1-160 || true)
+      if [[ -n "$body_hits" ]]; then
+        add_warn "[12 cross-tenant] another engagement is named in this vault's team-tier content:
+$(sed 's/^/    /' <<<"$body_hits" | head -10)
+    Team-tier never reaches the client, so this does not block. Confirm it is a
+    verbatim record or a deliberate comparison — not content that belongs in the
+    other vault. /repo-audit does the judgment pass."
+      fi
+    fi
+  fi
+fi
+
+# ===========================================================================
+# Report + verdict
+# ===========================================================================
+if [[ -n "$WARNS" ]]; then
+  echo "──────────────────────────────────────────────────────────────" >&2
+  echo "CORTEX GATE — $nwarn warning(s) on $BASE (advisory, not blocking):" >&2
+  echo >&2
+  printf '%s' "$WARNS" >&2
+fi
+
+if [[ "$nblock" -gt 0 ]]; then
+  echo "══════════════════════════════════════════════════════════════" >&2
+  echo "CORTEX SAFETY GATE: PUSH BLOCKED — $nblock violation(s) on $BASE" >&2
+  echo >&2
+  printf '%s' "$BLOCKS" >&2
+  echo >&2
+  echo "Fix the above, or bypass with (loud, logged):" >&2
+  echo "    CORTEX_GATE_OVERRIDE=1 CORTEX_GATE_OVERRIDE_REASON='...' git push" >&2
+  echo "══════════════════════════════════════════════════════════════" >&2
+  exit 1
+fi
+
+echo "cortex gate: clean ($nwarn warning(s)) — $BASE" >&2
+exit 0

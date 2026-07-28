@@ -1,0 +1,58 @@
+# Cortex engagement-vault gitleaks config (core ADR-012).
+#
+# Shipped into every cortex-{client} vault via core/templates/vault/ so the
+# secret-scanning ruleset is identical across engagements and new vaults inherit
+# it. Consumed by .githooks/pre-push (dimension 2). Extends gitleaks' built-in
+# ruleset; the allowlist below suppresses the known-safe placeholders that live
+# in a vault so the gate stays low-false-positive.
+#
+# Update the engine ruleset with:  gitleaks --version  (bundled rules travel
+# with the binary; this file only layers vault-specific allowlisting on top).
+
+title = "cortex-vault"
+
+# Inherit gitleaks' full built-in rule catalogue (AWS, GCP, Anthropic, Stripe,
+# GitHub, PEM keys, JWTs, generic api-key/secret assignments, …).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vault-safe placeholders and fixtures — not real secrets."
+# Test the regexes below against the WHOLE matched line, not just the secret
+# value — the share-URL / base64 context lives around the value, not in it.
+regexTarget = "line"
+
+# Paths that legitimately carry placeholder/sample credential shapes.
+paths = [
+  '''\.env\.example$''',
+  '''(^|/)fixtures?/''',
+  '''(^|/)samples?/''',
+  '''\.gitleaks\.toml$''',
+  # The gate's own infra ships into every vault: the self-test plants fake
+  # AKIA/sk-live/SSN poisons, and pre-push carries secret-shaped regex literals.
+  # Without this the gate self-trips on its own files.
+  '''\.githooks/''',
+]
+
+regexes = [
+  # Obvious placeholder values used in docs/templates.
+  '''(?i)(your|example|placeholder|dummy|test|sample|redacted|xxx+|changeme|<[^>]+>)[-_]?(key|token|secret|password)''',
+  '''(?i)(key|token|secret|password|api[_-]?key)["'\s:=]+(your|example|placeholder|changeme|xxx+|\.\.\.|<[^>]+>)''',
+  '''AKIAIOSFODNN7EXAMPLE''',                 # AWS's own documented example key
+  # PUBLISHED portal share URLs (cortex.cohortl.com) carry a
+  # signed ?token=... (UUID or Supabase JWT). Recorded on purpose in shared_url
+  # fields + share indexes — not leaked credentials. Scoped to OUR portal domains
+  # so a genuinely leaked token elsewhere is NOT masked. Narrowed 2026-07-28: the
+  # retired studio.goabeto.com domain was dropped after every vault was purged of
+  # its dead share URLs and the narrowed config was re-verified against all 24
+  # vaults (identical finding counts). Without this, gitleaks'
+  # generic-api-key + jwt rules block every real vault push. See core ADR-012.
+  '''cortex\.cohortl\.com[^\s"']*[?&]token=''',
+  '''shared_url:\s*["']?https?://cortex\.cohortl\.com''',
+  # Embedded media in rendered HTML deliverables (base64 audio/image data URIs) —
+  # not credentials; a long base64 blob otherwise trips key-shape heuristics.
+  '''data:[a-z]+/[a-z0-9.+-]+;base64,''',
+]
+
+# Commits known to be clean (populate as needed after a reviewed override).
+commits = []
