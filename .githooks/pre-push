@@ -316,9 +316,10 @@ esac
 # vaults are blind, which is what makes propagating this hook non-atomic and
 # therefore safe.
 #
-# The GitHub repo behind either folder is `greenbits-dev/cohortl-private`
-# (deliberately a solo repo, not company-org infrastructure), so the folder/repo
-# name mismatch is expected and is not something to "fix".
+# The GitHub repo behind candidate 2 is `greenbits-dev/mini-cohortl` (renamed from
+# `cohortl-private` 2026-07-30; deliberately a solo repo on a personal account, not
+# company-org infrastructure). Folder and repo now match, but nothing here depends
+# on that — resolution is by candidate list, not by name.
 #
 # Absence is FATAL, not a warning — see the else branch below.
 # ===========================================================================
