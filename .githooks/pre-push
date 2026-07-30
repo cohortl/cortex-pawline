@@ -564,8 +564,15 @@ fi
 # Verified across all 25 vaults 2026-07-30: 22 warnings -> 3. Every dropped hit
 # was confirmed a false positive by hand; all survivors were genuine, and two of
 # them turned out to be shipped deliverables still carrying a stale draft marker.
+#
+# `archive/` is excluded: an archived doc is by definition not pending send, and
+# nothing under it is client-rendered — the vault loader walks `knowledge-base/**`
+# through a top-level folder->type allowlist that `archive` is not in, and
+# old-layout `deliverables/` publishes per-doc to Supabase rather than by
+# directory. Dimension 9 only. The other dimensions still scan archive/, because
+# retired content can still carry PII or another tenant's name.
 draft_hits=""
-addressed=$(git grep -I -l -E -e '^audience:[[:space:]]*[^[:space:]]' "$TIP" -- "${CLIENT_DIRS[@]}" 2>/dev/null | sed "s/^${TIP}://" || true)
+addressed=$(git grep -I -l -E -e '^audience:[[:space:]]*[^[:space:]]' "$TIP" -- "${CLIENT_DIRS[@]}" 2>/dev/null | sed "s/^${TIP}://" | grep -vE '(^|/)_?archive/' || true)
 if [[ -n "$addressed" ]]; then
   while IFS= read -r _ad; do
     [[ -z "$_ad" ]] && continue
