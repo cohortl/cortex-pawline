@@ -46,6 +46,19 @@ cat > "$REG" <<'EOF'
 EOF
 export CORTEX_CLIENT_REGISTRY="$REG"
 
+# Throwaway HOMEs for the registry-RESOLUTION cases. The env override above short-
+# circuits candidate 1, so it never exercises the default candidate paths that
+# every real vault actually uses. Planting the same registry under a fake HOME
+# does, one candidate at a time.
+HOME_NEW="$WORK/home-new"          # candidate 2 — post-rename location
+HOME_LEGACY="$WORK/home-legacy"    # candidate 3 — legacy location, kept forever
+HOME_NONE="$WORK/home-none"        # no registry anywhere → must fail closed
+mkdir -p "$HOME_NEW/cohortl/mini-cohortl/engagements" \
+         "$HOME_LEGACY/cohortl/cohortl-admin/engagements" \
+         "$HOME_NONE"
+cp "$REG" "$HOME_NEW/cohortl/mini-cohortl/engagements/_registry.md"
+cp "$REG" "$HOME_LEGACY/cohortl/cohortl-admin/engagements/_registry.md"
+
 ZERO40="0000000000000000000000000000000000000000"
 
 # Feed the hook a realistic stdin line. Pass a base sha to simulate an
@@ -58,7 +71,37 @@ run_hook() {
   printf 'refs/heads/main %s refs/heads/main %s\n' "$tip" "$base" | bash "$HOOK" 2>&1
 }
 
+# Same as run_hook, but with CORTEX_CLIENT_REGISTRY unset and HOME redirected, so
+# the hook's own candidate list decides resolution. Repo-local git config (user,
+# core.hooksPath) is already set, so a foreign HOME does not disturb git.
+#   run_hook_home <home> [base-sha] [extra VAR=VAL ...]
+run_hook_home() {
+  local home="$1" base="$2"; shift 2
+  local tip; tip=$(git rev-parse HEAD)
+  printf 'refs/heads/main %s refs/heads/main %s\n' "$tip" "$base" \
+    | env -u CORTEX_CLIENT_REGISTRY HOME="$home" "$@" bash "$HOOK" 2>&1
+}
+
 pass=0; fail=0
+
+# <label> <expected-rc: 0|nonzero> <home> <base-sha> <grep-token...> — the
+# registry-resolution assertions. Every token must appear in the output.
+expect_home() {
+  local label="$1" want="$2" home="$3" base="$4"; shift 4
+  local out rc token
+  out=$(run_hook_home "$home" "$base"); rc=$?
+  local ok=1
+  if [[ "$want" == "0" && $rc -ne 0 ]]; then ok=0; fi
+  if [[ "$want" != "0" && $rc -eq 0 ]]; then ok=0; fi
+  for token in "$@"; do grep -qi -- "$token" <<<"$out" || ok=0; done
+  if [[ $ok -eq 1 ]]; then
+    echo "  ✓ $label"; pass=$((pass+1))
+  else
+    echo "  ✗ $label (rc=$rc, wanted ${want}):"; echo "$out" | sed 's/^/      /'
+    fail=$((fail+1))
+  fi
+}
+
 expect_block() {  # <label> <grep-token> [base-sha]
   local label="$1" token="$2" base="${3:-$ZERO40}" out
   out=$(run_hook "$base"); local rc=$?
@@ -161,6 +204,68 @@ if [[ $rc -eq 0 ]]; then
   echo "  ✓ dim12 exempts docs/research/<subject>/"; pass=$((pass+1))
 else
   echo "  ✗ dim12 false-blocked docs/research/ (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Registry resolution: candidate order, and FAIL CLOSED on absence ---------
+# Dimensions 5 and 12 both derive their needles from the client registry, so
+# whether the registry resolves decides whether two BLOCKING dimensions run at
+# all. Before 2026-07-30 a missing registry warned and let the push through,
+# which meant "clean" could silently mean "never checked". These cases pin the
+# candidate order and pin absence to a block.
+#
+# Supersedes the 2026-07-28 case that asserted an absent registry PASSES while
+# announcing both dimensions were disabled. Announcing it was the best available
+# fix at the time; blocking is the actual fix, so the assertion inverts. Do not
+# reinstate the pass-expecting version.
+#
+# These cases move HOME rather than setting CORTEX_CLIENT_REGISTRY to a bogus
+# path. The env var is only candidate 1 of 3 — pointing it at a missing file
+# falls through to the real registry on a developer machine, so it cannot test
+# absence at all (the pre-2026-07-30 case had exactly that blind spot).
+reset_clean
+reg_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+
+expect_home "registry resolves at the legacy candidate path (pass)" \
+  0 "$HOME_LEGACY" "$reg_base" "cortex gate: clean"
+
+expect_home "registry resolves at the post-rename candidate path (pass)" \
+  0 "$HOME_NEW" "$reg_base" "cortex gate: clean"
+
+# The core of the fix: no registry at any candidate is a BLOCK, and the message
+# has to name BOTH disabled dimensions — a reader who only hears about dim 5
+# still believes dim 12 ran.
+expect_home "no registry at any candidate path BLOCKS, naming dims 5 and 12" \
+  1 "$HOME_NONE" "$reg_base" "PUSH BLOCKED" "5+12 cross-tenant" "dim 5" "dim 12"
+
+# The escape hatch (for CI, which has no registry access): converts the block to
+# a loud pass. "Loud" is part of the contract, so assert the banner too.
+out=$(run_hook_home "$HOME_NONE" "$reg_base" CORTEX_ALLOW_NO_REGISTRY=1); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "CORTEX_ALLOW_NO_REGISTRY=1 on cortex-testco" <<<"$out" \
+   && grep -q "UNCHECKED" <<<"$out"; then
+  echo "  ✓ CORTEX_ALLOW_NO_REGISTRY=1 converts the block to a loud pass"; pass=$((pass+1))
+else
+  echo "  ✗ escape hatch did not behave (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# Regression guard for this change: resolution moved from a single hardcoded path
+# to a candidate list, so prove dimension 12 still FIRES when the registry is
+# found via a candidate path rather than via CORTEX_CLIENT_REGISTRY.
+reset_clean
+mkdir -p intake/sessions
+echo "walkthrough for the other engagement" > intake/sessions/2026-04-14-northwind-partners-walkthrough.md
+git add -A >/dev/null 2>&1; git commit -qm "poison: cross-tenant path, candidate-resolved registry" >/dev/null 2>&1
+expect_home "dim12 still fires with the registry found via a candidate path" \
+  1 "$HOME_NEW" "$BASE" "cross-tenant path"
+
+# Fall-through is deliberate: an unset-or-typo'd CORTEX_CLIENT_REGISTRY must drop
+# to the next candidate rather than blinding the gate. Same poison, same expected
+# block, with candidate 1 pointing at nothing.
+out=$(run_hook_home "$HOME_NEW" "$BASE" CORTEX_CLIENT_REGISTRY="$WORK/no-such-registry.md"); rc=$?
+if [[ $rc -ne 0 ]] && grep -qi "cross-tenant path" <<<"$out"; then
+  echo "  ✓ a bad CORTEX_CLIENT_REGISTRY falls through to the next candidate"; pass=$((pass+1))
+else
+  echo "  ✗ bad CORTEX_CLIENT_REGISTRY did not fall through (rc=$rc):"
+  echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
 
 # --- Clean tree must PASS -----------------------------------------------------

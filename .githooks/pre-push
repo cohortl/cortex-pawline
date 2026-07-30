@@ -18,12 +18,17 @@
 # Blocking dimensions: 1 (tier triage), 2 (secrets), 3 (SSN/credit-card),
 #   5 (cross-tenant, client surface), 6 (transclusion leak), 8 (config
 #   redaction), 9 (explicit confidential markers), 12 (cross-tenant file path).
+#   Also blocking: an unresolvable client registry — dims 5 and 12 cannot run
+#   without it, so the gate fails CLOSED rather than reporting a false "clean".
 # Warning dimensions:  3 (bulk PII lists), 4 (PHI), 7 (internal links),
 #   9 (status: draft), 10 (binary metadata), 11 (transcript side-talk),
 #   12 (cross-tenant mention in team-tier bodies).
 #
 # Bypass: set CORTEX_GATE_OVERRIDE=1 (optionally CORTEX_GATE_OVERRIDE_REASON=...).
 # The override is LOUD and LOGGED to stderr — bypass is possible, never silent.
+# Narrow escape hatch: CORTEX_ALLOW_NO_REGISTRY=1 downgrades the missing-client-
+# registry BLOCK to a loud warning (dims 5 + 12 unchecked). For CI, which has no
+# access to the registry repo — not for interactive use.
 #
 # Self-contained bash (no core repo / npm dep required at runtime) so it works
 # on any clone, including Justin's machine. Mirrors the regex/scan style of the
@@ -71,7 +76,14 @@ while read -r _localref localsha _remoteref remotesha; do
   if [[ -n "${remotesha:-}" && "$remotesha" != "$ZERO" ]]; then
     RANGES+=("${remotesha}..${localsha}")       # incremental
   else
-    RANGES+=("$localsha")                        # new branch — full tip
+    # New branch: the remote has no ref for it, but it almost always shares
+    # history with an already-pushed branch. `--not --remotes` scans only the
+    # commits that are genuinely new to the remote. Scanning the bare tip means
+    # scanning ALL history, which hard-blocks on long-dead findings that were
+    # pushed months ago and are not what this push is adding — e.g. retired
+    # studio.goabeto.com share tokens from May, in files since deleted. On a
+    # repo with no remote refs at all this correctly degrades to full history.
+    RANGES+=("${localsha} --not --remotes")      # new branch — only what's new
   fi
 done
 
@@ -178,11 +190,9 @@ if command -v gitleaks >/dev/null 2>&1; then
   for range in "${RANGES[@]:-$TIP}"; do
     gl_args=(git --no-banner --redact --exit-code 1)
     [[ -n "$GITLEAKS_CFG" ]] && gl_args+=(--config "$GITLEAKS_CFG")
-    if [[ "$range" == *..* ]]; then
-      gl_out=$(gitleaks "${gl_args[@]}" --log-opts="$range" 2>&1)
-    else
-      gl_out=$(gitleaks "${gl_args[@]}" 2>&1)
-    fi
+    # Always scope to the range. Dropping --log-opts makes gitleaks scan the
+    # repo's ENTIRE history, which is never what a push is adding.
+    gl_out=$(gitleaks "${gl_args[@]}" --log-opts="$range" 2>&1)
     if [[ $? -ne 0 ]]; then
       add_block "[2 secrets] gitleaks found credential(s) in $range (values redacted):
 $(grep -E 'Finding|File|Line|Secret|RuleID' <<<"$gl_out" | sed 's/^/    /' | head -40)
@@ -292,25 +302,62 @@ $(sed 's/^/    /' <<<"$phi_hits" | head -20)
 esac
 
 # ===========================================================================
+# Client registry resolution — the input to dimensions 5 AND 12
+#
+# Ordered candidate list, first EXISTING file wins:
+#   1. $CORTEX_CLIENT_REGISTRY                              explicit override
+#   2. $HOME/cohortl/mini-cohortl/engagements/_registry.md   current location
+#   3. $HOME/cohortl/cohortl-admin/engagements/_registry.md  legacy — keep forever
+#
+# This function is the ONLY place any of those paths is written down. Candidate 3
+# is retained permanently and deliberately: it costs one `[[ -f ]]` test and it
+# means a vault whose hook was never re-installed keeps resolving the registry
+# before, during and after the folder rename. No window exists in which some
+# vaults are blind, which is what makes propagating this hook non-atomic and
+# therefore safe.
+#
+# The GitHub repo behind either folder is `greenbits-dev/cohortl-private`
+# (deliberately a solo repo, not company-org infrastructure), so the folder/repo
+# name mismatch is expected and is not something to "fix".
+#
+# Absence is FATAL, not a warning — see the else branch below.
+# ===========================================================================
+# Sets two globals: REGISTRY (the winner, "" if none) and REGISTRY_CANDIDATES
+# (everything tried, for the error message). Deliberately NOT a command
+# substitution — a subshell would drop the candidate list the message needs.
+REGISTRY=""
+REGISTRY_CANDIDATES=()
+resolve_registry() {
+  REGISTRY=""
+  REGISTRY_CANDIDATES=()
+  [[ -n "${CORTEX_CLIENT_REGISTRY:-}" ]] && REGISTRY_CANDIDATES+=("$CORTEX_CLIENT_REGISTRY")
+  REGISTRY_CANDIDATES+=(
+    "$HOME/cohortl/mini-cohortl/engagements/_registry.md"
+    "$HOME/cohortl/cohortl-admin/engagements/_registry.md"
+  )
+  local c
+  for c in "${REGISTRY_CANDIDATES[@]}"; do
+    if [[ -f "$c" ]]; then REGISTRY="$c"; return 0; fi
+  done
+  return 1
+}
+resolve_registry || true
+
+# ===========================================================================
 # Dimension 5 — Cross-tenant contamination (BLOCK on other clients' names/slugs)
 # Reads the client registry at runtime (never commits other clients' names into
-# this vault — that would itself be a leak). Registry absent -> WARN + skip.
-#
-# The folder below is `cohortl-admin`; the GitHub repo it came from is
-# `greenbits-dev/cohortl-private` (renamed 2026-07-28 — it is deliberately a
-# solo repo, not company-org infrastructure). The folder/repo mismatch is
-# INTENTIONAL. Do not rename the folder to match: this default path is baked
-# into every already-installed vault hook, and a missing registry downgrades
-# this check to a warning without blocking the push. Renaming would silently
-# disable cross-tenant detection across all vaults. Override with
-# CORTEX_CLIENT_REGISTRY if you genuinely need a different location.
+# this vault — that would itself be a leak).
 # ===========================================================================
-REGISTRY="${CORTEX_CLIENT_REGISTRY:-$HOME/cohortl/cohortl-admin/engagements/_registry.md}"
 # Every OTHER vault slug in the registry. Populated in the dimension 5 loop
 # below and consumed by dimension 12 — kept as a bare `<slug>` list (no
 # `cortex-` prefix) because dimension 12 matches both forms.
 other_vaults=()
-if [[ -f "$REGISTRY" ]]; then
+# Sentinel: set to 1 ONLY after the registry has actually been parsed. Dimension
+# 12 keys on this, never on `${#other_vaults[@]}` — an empty array is
+# indistinguishable from "there genuinely are no other vaults", so without the
+# sentinel "never checked" and "checked, clean" collapse into the same silence.
+registry_loaded=0
+if [[ -n "$REGISTRY" ]]; then
   # Build the block needle set from the registry table:
   #   - other vaults' slugs in the specific `cortex-<slug>` form (near-zero FP)
   #   - other clients' MULTI-WORD canonical names (specific enough to block)
@@ -336,6 +383,7 @@ if [[ -f "$REGISTRY" ]]; then
       block_needles+=("$core")                                # multi-word canonical name
     fi
   done < <(grep -E '^\|' "$REGISTRY")
+  registry_loaded=1     # the needle set is real from here on
 
   # Scope the BLOCK to the CLIENT-facing surface + config only. Two things stay
   # out of the hard gate by design:
@@ -359,9 +407,37 @@ $(sed 's/^/    /' <<<"$hits" | head -15)
     fi
   fi
 else
-  add_warn "[5 cross-tenant] client registry not found ($REGISTRY) — cross-tenant
-    block skipped. Set CORTEX_CLIENT_REGISTRY, or run /repo-audit which does a
-    fuzzy cross-tenant pass."
+  # Dimensions 5 AND 12 both derive their needle set from this file, so a missing
+  # registry disables TWO blocking checks, not one. That is a BLOCK, not a
+  # warning: a blocking dimension that turns itself off quietly is the exact
+  # failure this gate exists to prevent, and "clean" would otherwise silently
+  # mean "not checked". The asymmetry is the point — a human who hits the block
+  # reads one line and sets one variable; a human who hits a warning reads
+  # "clean" and pushes.
+  registry_msg="[5+12 cross-tenant] client registry not found. Looked for, in order:
+$(printf '      %s\n' "${REGISTRY_CANDIDATES[@]}")
+    BOTH cross-tenant blocks depend on it:
+      dim 5  — other clients' names/slugs in the client-facing surface
+      dim 12 — other clients' slugs in tracked file paths
+    A clean result here does NOT mean this vault was checked for cross-tenant
+    content."
+  if [[ "${CORTEX_ALLOW_NO_REGISTRY:-}" == "1" ]]; then
+    {
+      echo "════════════════════════════════════════════════════════════════"
+      echo "  CORTEX_ALLOW_NO_REGISTRY=1 on $BASE — dimensions 5 and 12 are"
+      echo "  UNCHECKED for this push. Cross-tenant leaks cannot be detected."
+      echo "  This escape hatch exists for CI, which has no registry access."
+      echo "════════════════════════════════════════════════════════════════"
+    } >&2
+    add_warn "$registry_msg
+    CORTEX_ALLOW_NO_REGISTRY=1 is set — proceeding UNCHECKED on purpose."
+  else
+    add_block "$registry_msg
+    Remedy: point CORTEX_CLIENT_REGISTRY at the registry file, or set
+    CORTEX_ALLOW_NO_REGISTRY=1 to push with dims 5+12 unchecked (that is the
+    supported path for CI, not for interactive use). /repo-audit does a fuzzy
+    cross-tenant pass without the registry, but it is not a substitute."
+  fi
 fi
 
 # ===========================================================================
@@ -526,7 +602,13 @@ fi
 # is enforced by scripts/assert-vault-boundary.sh instead (ADR-012 layer 2).
 if [[ "$BASE" == "cortex-portal" ]]; then other_vaults=(); fi
 
-if [[ ${#other_vaults[@]} -gt 0 ]]; then
+# The guard is the `registry_loaded` SENTINEL first, the array second. With no
+# registry there is nothing to match on, but that is NOT the same state as
+# "registry loaded, this is the only vault" — the former is handled above by the
+# dimension 5 else branch, which BLOCKS and names this dimension by number. The
+# ordering matters: keying on `${#other_vaults[@]}` alone is what let a missing
+# registry silently switch this dimension off.
+if [[ "$registry_loaded" -eq 1 && ${#other_vaults[@]} -gt 0 ]]; then
   path_pat=""; body_pat=""
   for s in "${other_vaults[@]}"; do
     [[ -z "$s" || "$s" == "$SLUG" ]] && continue
