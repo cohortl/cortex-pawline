@@ -546,12 +546,38 @@ if [[ -n "$marker_hits" ]]; then
 $(sed 's/^/    /' <<<"$marker_hits" | head -20)
     Remedy: this content is client-visible — move it to internal/ or remove the marker."
 fi
-# status: draft is a legitimate deliverable lifecycle state (see scaffold.md) — warn only.
-draft_hits=$(tree_grep 'status:[[:space:]]*draft' -- "${CLIENT_DIRS[@]}" || true)
+# `status: draft` is a legitimate lifecycle state for concepts/playbooks/policies
+# (see scaffold.md): an unvalidated KB reference note is not a disclosure risk. It
+# only signals risk on a document ADDRESSED to someone — so require an `audience:`
+# field, which reference notes do not carry. Two refinements matter:
+#
+#   * Match ANY audience value, not the literal `client`. The field holds the
+#     client slug (`audience: metro`, `audience: latite`) as often as `client`.
+#   * Anchor the status value. `status: draft | active | validated` inside a
+#     CONVENTIONS.md schema block is documentation, not frontmatter, and was the
+#     single largest source of false positives.
+#
+# Scoped by `audience:` rather than `type:` because deliverable types are
+# per-vault free text (deliverable, demo-script, compliance-brief, walkthrough),
+# so a type allowlist silently misses real drafts.
+#
+# Verified across all 25 vaults 2026-07-30: 22 warnings -> 3. Every dropped hit
+# was confirmed a false positive by hand; all survivors were genuine, and two of
+# them turned out to be shipped deliverables still carrying a stale draft marker.
+draft_hits=""
+addressed=$(git grep -I -l -E -e '^audience:[[:space:]]*[^[:space:]]' "$TIP" -- "${CLIENT_DIRS[@]}" 2>/dev/null | sed "s/^${TIP}://" || true)
+if [[ -n "$addressed" ]]; then
+  while IFS= read -r _ad; do
+    [[ -z "$_ad" ]] && continue
+    _dh=$(git grep -I -n -E -e '^status:[[:space:]]*draft[[:space:]]*$' "$TIP" -- "$_ad" 2>/dev/null | sed "s/^${TIP}://" || true)
+    [[ -n "$_dh" ]] && draft_hits+="$_dh"$'\n'
+  done <<< "$addressed"
+fi
+draft_hits=$(sed '/^$/d' <<<"$draft_hits")
 if [[ -n "$draft_hits" ]]; then
-  add_warn "[9 markers] draft-status note(s) under client-facing knowledge-base/:
+  add_warn "[9 markers] draft-status doc(s) addressed to a recipient:
 $(sed 's/^/    /' <<<"$draft_hits" | head -12)
-    Confirm these are ready for the client to see, or hold in internal/ until shared."
+    Confirm these are ready to send, or hold in internal/ until shared."
 fi
 
 # ===========================================================================
