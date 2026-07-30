@@ -26,9 +26,25 @@
 #
 # Bypass: set CORTEX_GATE_OVERRIDE=1 (optionally CORTEX_GATE_OVERRIDE_REASON=...).
 # The override is LOUD and LOGGED to stderr — bypass is possible, never silent.
-# Narrow escape hatch: CORTEX_ALLOW_NO_REGISTRY=1 downgrades the missing-client-
-# registry BLOCK to a loud warning (dims 5 + 12 unchecked). For CI, which has no
-# access to the registry repo — not for interactive use.
+#
+# CROSS-TENANT NEEDLE SET — three states, not two (ADR-012 Amendment 3):
+#   full registry present  -> dims 5 + 12 fully armed (slugs AND client names)
+#   .githooks/vault-slugs.txt only -> dim 12 fully armed, dim 5 armed on slugs;
+#                             client NAMES unchecked and reported as such
+#   neither                -> BLOCK (fail closed)
+#
+# The slug list ships inside each vault next to this hook, so it needs no path
+# resolution and works for everyone. The registry does not ship: it holds the
+# real Client <-> anon mapping and lives in a solo repo.
+#
+# Correcting an assumption this file used to state: the escape hatch
+# CORTEX_ALLOW_NO_REGISTRY=1 was documented as "for CI, which has no registry
+# access — not for interactive use". Wrong from the start. The population without
+# registry access is EVERY human except its owner, and on 2026-07-30 fail-closed
+# turned that into a hard block for a teammate mid-push — while revealing that
+# dims 5 and 12 had never run on their pushes at all, because the previous
+# behaviour was a silent warn+skip. The slugs-only state exists so that machine
+# gets real coverage instead of a bypass habit.
 #
 # Self-contained bash (no core repo / npm dep required at runtime) so it works
 # on any clone, including Justin's machine. Mirrors the regex/scan style of the
@@ -353,17 +369,25 @@ resolve_registry || true
 # below and consumed by dimension 12 — kept as a bare `<slug>` list (no
 # `cortex-` prefix) because dimension 12 matches both forms.
 other_vaults=()
+# Declared here, not inside a branch: both the registry path and the slug-list
+# path append to it, and under `set -u` a bare += on an unset array aborts.
+block_needles=()
 # Sentinel: set to 1 ONLY after the registry has actually been parsed. Dimension
 # 12 keys on this, never on `${#other_vaults[@]}` — an empty array is
 # indistinguishable from "there genuinely are no other vaults", so without the
 # sentinel "never checked" and "checked, clean" collapse into the same silence.
 registry_loaded=0
+# Set when the needle set came from the shipped slug list rather than the full
+# registry: dim 12 is armed and dim 5 runs on slugs, but client NAMES are not
+# checked. Reported explicitly rather than folded into a clean result.
+slugs_only=0
+# Ships with the hook, inside the vault — deliberately not path-resolved.
+SLUGS_FILE="$REPO_ROOT/.githooks/vault-slugs.txt"
 if [[ -n "$REGISTRY" ]]; then
   # Build the block needle set from the registry table:
   #   - other vaults' slugs in the specific `cortex-<slug>` form (near-zero FP)
   #   - other clients' MULTI-WORD canonical names (specific enough to block)
   # Single-word / short names are left to /repo-audit's fuzzy pass (avoids FP).
-  block_needles=()
   while IFS='|' read -r _lead name _anon vault _rest; do
     name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     vault=$(echo "$vault" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -407,17 +431,63 @@ $(sed 's/^/    /' <<<"$hits" | head -15)
     /repo-audit skill's call; structural refs in docs/plans/ are fine)."
     fi
   fi
+elif [[ -f "$SLUGS_FILE" ]]; then
+  # ---- Degraded but ARMED: slugs without names (ADR-012 Amendment 3) --------
+  # The needle set has two halves and only one is sensitive:
+  #   slugs  — GitHub repo names in the cohortl org. Anyone on the `cortex` team
+  #            can list them with `gh`. Not secret.
+  #   names  — the real Client <-> anon mapping. Genuinely sensitive; lives in
+  #            mini-cohortl, a solo repo, and is not shareable.
+  #
+  # Treating those as one all-or-nothing input is what blocked a teammate on
+  # 2026-07-30 with no way to satisfy the gate — and revealed that dims 5 and 12
+  # had never run on their pushes at all, because the pre-fail-closed behaviour
+  # was a silent warn+skip. `.githooks/vault-slugs.txt` ships the shareable half
+  # INTO each vault, next to this hook, so it needs no path resolution: it is
+  # present on every clone for every person. Path resolution is exactly what
+  # failed.
+  #
+  # In this state dim 12 runs in full and dim 5 runs on slugs. The name half is
+  # genuinely unchecked and is reported as such — never folded into a clean result.
+  while IFS= read -r _s; do
+    _s="${_s%%#*}"; _s="$(echo "$_s" | tr -d '[:space:]')"
+    [[ -z "$_s" ]] && continue
+    [[ "$_s" == "$BASE" ]] && continue                      # own vault
+    [[ "$_s" == "cortex-portal" ]] && continue              # shared infra, not a tenant
+    block_needles+=("$_s")
+    other_vaults+=("${_s#cortex-}")
+  done < "$SLUGS_FILE"
+
+  if [[ ${#block_needles[@]} -gt 0 ]]; then
+    registry_loaded=1                                       # dim 12 may run
+    slugs_only=1
+    grep_args=()
+    for needle in "${block_needles[@]}"; do grep_args+=(-e "$needle"); done
+    hits=$(git grep -I -n -i -F "${grep_args[@]}" "$TIP" -- "${CLIENT_DIRS[@]}" config 2>/dev/null | sed "s/^${TIP}://" | cut -c1-200 || true)
+    if [[ -n "$hits" ]]; then
+      add_block "[5 cross-tenant] another engagement's vault slug appears in this vault's client-facing content:
+$(sed 's/^/    /' <<<"$hits" | head -15)
+    Remedy: this is $BASE — remove references to other clients' systems from
+    knowledge-base/ + config/."
+    fi
+    add_warn "[5 cross-tenant] running on vault slugs only — the client registry was not
+    found, so other clients' REAL NAMES are not in the needle set.
+      checked:   other vaults' slugs (dim 5) and slugs in file paths (dim 12)
+      UNCHECKED: another client's company or contact name in prose
+    This is the expected state on any machine without registry access. Run
+    /repo-audit for a fuzzy name pass, and do not read a clean dim 5 here as
+    'no other client is named in this vault'."
+  fi
 else
-  # Dimensions 5 AND 12 both derive their needle set from this file, so a missing
-  # registry disables TWO blocking checks, not one. That is a BLOCK, not a
-  # warning: a blocking dimension that turns itself off quietly is the exact
-  # failure this gate exists to prevent, and "clean" would otherwise silently
-  # mean "not checked". The asymmetry is the point — a human who hits the block
-  # reads one line and sets one variable; a human who hits a warning reads
-  # "clean" and pushes.
-  registry_msg="[5+12 cross-tenant] client registry not found. Looked for, in order:
+  # ---- Neither half available: fail closed ---------------------------------
+  # A blocking dimension that turns itself off quietly is the exact failure this
+  # gate exists to prevent, and "clean" would otherwise silently mean "not
+  # checked". The asymmetry is the point — a human who hits the block reads one
+  # line and fixes it; a human who hits a warning reads "clean" and pushes.
+  registry_msg="[5+12 cross-tenant] no needle set available. Looked for a client registry:
 $(printf '      %s\n' "${REGISTRY_CANDIDATES[@]}")
-    BOTH cross-tenant blocks depend on it:
+    …and the shipped slug list at: .githooks/vault-slugs.txt
+    BOTH cross-tenant blocks depend on one of them:
       dim 5  — other clients' names/slugs in the client-facing surface
       dim 12 — other clients' slugs in tracked file paths
     A clean result here does NOT mean this vault was checked for cross-tenant
@@ -427,17 +497,17 @@ $(printf '      %s\n' "${REGISTRY_CANDIDATES[@]}")
       echo "════════════════════════════════════════════════════════════════"
       echo "  CORTEX_ALLOW_NO_REGISTRY=1 on $BASE — dimensions 5 and 12 are"
       echo "  UNCHECKED for this push. Cross-tenant leaks cannot be detected."
-      echo "  This escape hatch exists for CI, which has no registry access."
       echo "════════════════════════════════════════════════════════════════"
     } >&2
     add_warn "$registry_msg
     CORTEX_ALLOW_NO_REGISTRY=1 is set — proceeding UNCHECKED on purpose."
   else
     add_block "$registry_msg
-    Remedy: point CORTEX_CLIENT_REGISTRY at the registry file, or set
-    CORTEX_ALLOW_NO_REGISTRY=1 to push with dims 5+12 unchecked (that is the
-    supported path for CI, not for interactive use). /repo-audit does a fuzzy
-    cross-tenant pass without the registry, but it is not a substitute."
+    Remedy: restore .githooks/vault-slugs.txt (re-install the hooks — it ships
+    with them and needs no registry access), or point CORTEX_CLIENT_REGISTRY at
+    the registry for the full name check. CORTEX_ALLOW_NO_REGISTRY=1 pushes with
+    dims 5+12 unchecked; that is the supported path for CI. /repo-audit does a
+    fuzzy cross-tenant pass, but it is not a substitute."
   fi
 fi
 

@@ -247,6 +247,67 @@ else
   echo "  ✗ escape hatch did not behave (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
 
+# ── Slugs-only state (ADR-012 Amendment 3) ──────────────────────────────────
+# The needle set has two halves and only one is sensitive. A machine without
+# registry access ships with .githooks/vault-slugs.txt and gets dim 12 in full
+# plus the slug half of dim 5; client NAMES stay unchecked and must be REPORTED
+# as unchecked rather than folded into a clean result.
+#
+# This is the state every teammate is in. Before it existed they were blocked
+# outright (2026-07-30), and before fail-closed they were silently unchecked.
+mkdir -p .githooks
+cat > .githooks/vault-slugs.txt <<'EOF'
+# generated — slugs only, no client names
+cortex-testco
+cortex-rival
+cortex-northwind-partners
+EOF
+
+reset_clean
+expect_home "slugs-only: a clean tree PASSES (no registry needed)" \
+  0 "$HOME_NONE" "$BASE" "cortex gate: clean"
+
+# It must say what it did NOT check. A clean dim 5 here does not mean no other
+# client is named — that is the whole risk of a partial needle set.
+out=$(run_hook_home "$HOME_NONE" "$BASE"); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "vault slugs only" <<<"$out" && grep -q "UNCHECKED" <<<"$out"; then
+  echo "  ✓ slugs-only: reports the name half as UNCHECKED"; pass=$((pass+1))
+else
+  echo "  ✗ slugs-only did not report its partial coverage (rc=$rc):"; echo "$out" | sed 's/^/      /' | head -8; fail=$((fail+1))
+fi
+
+# dim 12 must be fully armed on slugs alone — it only ever needed slugs.
+reset_clean
+mkdir -p intake/sessions
+echo "notes" > intake/sessions/2026-04-14-northwind-partners-walkthrough.md
+git add -A >/dev/null 2>&1; git commit -qm "poison: cross-tenant path, slugs only" >/dev/null 2>&1
+expect_home "slugs-only: dim 12 still BLOCKS a foreign slug in a path" \
+  1 "$HOME_NONE" "$BASE" "cross-tenant path"
+
+# dim 5 on the slug half.
+reset_clean
+echo "see cortex-rival for the comparable build" > knowledge-base/notes.md
+git add -A >/dev/null 2>&1; git commit -qm "poison: foreign slug in client surface" >/dev/null 2>&1
+expect_home "slugs-only: dim 5 still BLOCKS a foreign slug in client content" \
+  1 "$HOME_NONE" "$BASE" "5 cross-tenant"
+
+# The honest limit. A foreign client NAME passes, because names are not in the
+# needle set here. Asserting it documents the gap rather than pretending it away
+# — if this ever starts blocking, the slug list has grown names and that is a leak.
+reset_clean
+echo "compare with Rival Holdings Group's rollout" > knowledge-base/notes.md
+git add -A >/dev/null 2>&1; git commit -qm "foreign client NAME, slugs only" >/dev/null 2>&1
+expect_home "slugs-only: a foreign client NAME passes (documented gap, not a regression)" \
+  0 "$HOME_NONE" "$BASE" "cortex gate: clean"
+
+# With the full registry that same content MUST block — proving the slugs-only
+# state is a genuine degradation and not the new normal.
+expect_home "the same foreign NAME still BLOCKS when the registry IS available" \
+  1 "$HOME_NEW" "$BASE" "5 cross-tenant"
+
+rm -rf .githooks
+reset_clean
+
 # Regression guard for this change: resolution moved from a single hardcoded path
 # to a candidate list, so prove dimension 12 still FIRES when the registry is
 # found via a candidate path rather than via CORTEX_CLIENT_REGISTRY.
