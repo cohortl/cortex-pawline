@@ -206,6 +206,179 @@ else
   echo "  ✗ dim12 false-blocked docs/research/ (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
 
+# --- Dimension 13: Cohort L's own rate in a tracked file ----------------------
+# The measured regression: on 2026-07-31 the same monthly rate sat in 22 tracked
+# files across 11 vaults, four of them one deal line copied forward.
+reset_clean
+mkdir -p internal
+# Every figure in these fixtures is invented. Do not paste a real rate or a real
+# client number into a test — `core` is a shared repo, and dimension 13 exists
+# precisely to stop our commercial terms living in one.
+cat > internal/deal-shape.md <<'EOF'
+# Engagement shape
+7-month engagement, $77K/mo = $539K total, build-and-handover per the SOW.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: cohort l pricing" >/dev/null 2>&1
+expect_block "dim13 Cohort L rate in a tracked file" "pricing" "$BASE"
+
+# --- Dimension 13 control: the CLIENT's own numbers must PASS -----------------
+# This is the control that decides whether the dimension survives contact. 852
+# of 1,228 money-bearing lines in the estate are the client's own figures and
+# they are the raw material of every engagement. If this case ever blocks, the
+# dimension gets disabled and the rule is worth nothing.
+reset_clean
+mkdir -p knowledge-base/evidence
+cat > knowledge-base/evidence/unit-economics.md <<'EOF'
+# Unit economics
+Per-hour procedure revenue averages 2.0x the baseline per-hour rate ($611/hour vs $407/hour).
+Platform acquisitions are founder-led operators with $3-14M EBITDA at entry; the
+operating cadence is a monthly board meeting and quarterly engagement surveys.
+Missed-call revenue runs about $52K/month against a $19K/month ad spend.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: client numbers" >/dev/null 2>&1
+client_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$client_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 leaves the client's own numbers alone"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked the client's own numbers (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Dimension 13 control: our own vendor cost is opex, not a price -----------
+# What Cohort L PAYS is not what it charges. Flagging this would have asked for
+# the deletion of the tech-stack cost tracker built on purpose on 2026-07-13.
+reset_clean
+mkdir -p internal
+cat > internal/tooling-cost.md <<'EOF'
+# Cost view
+Fixed subscriptions: 3 x Claude Max 20x ($404/mo), 1 x ChatGPT Pro ($255/mo).
+Slack Pro tier at $9.42/u/mo for retention. Contractor rates $133-188/hr.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: our own opex" >/dev/null 2>&1
+opex_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$opex_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 exempts our own vendor / contractor cost"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked our own opex (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Dimension 13 control: a client figure ADJACENT to our duration ------------
+# The regression this pins, found on cortex-metro 2026-07-31 while cleaning it:
+# a client-facing roadmap said their killed Unifier overlay cost "~$2M. We propose
+# a 7-month engagement". Their sunk cost, one sentence before our proposed
+# duration, inside the 50-character window. The gate read it as our pricing and
+# would have blocked every push from that vault on one of the client's own
+# numbers — the exact way a blocking dimension earns a --no-verify habit.
+reset_clean
+mkdir -p knowledge-base/deliverables
+cat > knowledge-base/deliverables/roadmap.md <<'EOF'
+# Roadmap
+The overlay that was supposed to do that got killed four weeks ago after two
+years and ~$9M. We propose a 7-month engagement to replace it.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: client sunk cost beside our duration" >/dev/null 2>&1
+adj_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$adj_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 ignores a client figure one sentence from our duration"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked an adjacent client figure (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Dimension 13 control: the CLIENT's own cost language ---------------------
+# Found on cortex-precision-air 2026-07-31. Both of these are the client's own
+# economics, both sit in CLIENT-FACING knowledge-base decision notes, and both
+# blocked the push: their ad spend, and the cost of the voice stack we are
+# replacing. "What this costs" is not "what we charge".
+reset_clean
+mkdir -p knowledge-base/decisions
+cat > knowledge-base/decisions/spend.md <<'EOF'
+# Decisions
+- **Decline ad spend entirely.** Not considered — ~$37K/mo current spend is held
+  in place pending the unified attribution view; growth proposal declined separately.
+- **Voice stack**: Estimated cost ~$1,900/mo replacing ~$700-1,400/mo current.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: the client's own cost language" >/dev/null 2>&1
+spend_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$spend_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 ignores the client's own spend / estimated cost"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked the client's cost language (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Dimension 13: our own quote LABELLED "Cost" must still block --------------
+# The carve-out above is deliberately not bare `cost`, because a quote of ours
+# can be labelled "Cost" and still be a price rather than an expense.
+#
+# The commercial token sits on the SAME line here on purpose: this dimension is
+# line-based and does not read the enclosing heading, so a fixture relying on a
+# heading would pass for the wrong reason and prove nothing.
+reset_clean
+mkdir -p intake
+cat > intake/action-plan.md <<'EOF'
+# Action plan
+  - Cost per the SOW: $33K/mo across a 5-month build, per-deliverable pricing
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: our quote labelled Cost" >/dev/null 2>&1
+expect_block "dim13 our own quote labelled 'Cost' still blocks" "pricing" "$BASE"
+
+# --- Dimension 13 control: the client's economics and reported speech ---------
+# Three real false positives from the rollout, all in team-tier call notes:
+# an at-risk account value beside "justifies a month", a client's revenue growth,
+# and a third party's quoted view of what technology costs on a line that also
+# says "pricing" — as close to our own terms as a sentence can look without
+# being one.
+reset_clean
+mkdir -p intake/sessions
+cat > intake/sessions/call-notes.md <<'EOF'
+# Call notes
+- ROI math depends on the wedge module; renewal-risk surfacing on one account at
+  risk-of-loss > $70K already justifies a month.
+- Strong call. Confirmed 20x revenue growth ($3M -> $60M in 5.5 yrs).
+- The "$70/month not $35K" line tells us he will subject any pricing to a gut-check.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: client economics + reported speech" >/dev/null 2>&1
+econ_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$econ_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 ignores client economics and quoted third-party figures"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked client economics / reported speech (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Dimension 13: OUR price, quoted, beside a contract token still blocks -----
+# The reported-speech carve-out must not become a way to quote our own terms
+# past the gate. A _charge token routes the line around it.
+reset_clean
+mkdir -p internal
+printf '# Note\nDave said "we charge $88K/mo per the SOW" on the call.\n' > internal/note.md
+git add -A >/dev/null 2>&1; git commit -qm "poison: our quoted price with a contract token" >/dev/null 2>&1
+expect_block "dim13 our own price, quoted, beside a SOW still blocks" "pricing" "$BASE"
+
+# --- Dimension 13 control: what we pay PEOPLE is opex too ---------------------
+# The regression this pins: on the first live run of dimension 13 (mini-cohortl,
+# 2026-07-31) it blocked a push on an engagement-structure note carrying an EOR
+# premium and a monthly tech-lead figure. That is compensation Cohort L pays, not
+# a rate it charges, and the carve-out missed it because it knew the word
+# "contractor" and none of the vocabulary an employment arrangement uses.
+reset_clean
+mkdir -p internal
+cat > internal/staffing-note.md <<'EOF'
+# Staffing
+Engagement structure for the build engineer: EOR bridge (~$44-46K premium for 6
+months), then a PJ entity. Spain-adapted draft (tech lead, USD 8,300/mo budget).
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: what we pay people" >/dev/null 2>&1
+people_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$people_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 exempts employment / EOR compensation"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked employment compensation (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
 # --- Registry resolution: candidate order, and FAIL CLOSED on absence ---------
 # Dimensions 5 and 12 both derive their needles from the client registry, so
 # whether the registry resolves decides whether two BLOCKING dimensions run at

@@ -17,7 +17,8 @@
 #
 # Blocking dimensions: 1 (tier triage), 2 (secrets), 3 (SSN/credit-card),
 #   5 (cross-tenant, client surface), 6 (transclusion leak), 8 (config
-#   redaction), 9 (explicit confidential markers), 12 (cross-tenant file path).
+#   redaction), 9 (explicit confidential markers), 12 (cross-tenant file path),
+#   13 (Cohort L pricing in a tracked file).
 #   Also blocking: an unresolvable client registry — dims 5 and 12 cannot run
 #   without it, so the gate fails CLOSED rather than reporting a false "clean".
 # Warning dimensions:  3 (bulk PII lists), 4 (PHI), 7 (internal links),
@@ -755,6 +756,127 @@ $(sed 's/^/    /' <<<"$body_hits" | head -10)
     other vault. /repo-audit does the judgment pass."
       fi
     fi
+  fi
+fi
+
+# ===========================================================================
+# Dimension 13 — Cohort L pricing in a tracked file (BLOCK)
+#
+# The rule (mini-cohortl docs/plans/2026-07-31-pricing-out-of-delivery-repos.md):
+# what Cohort L CHARGES is David's to hold and does not belong in a delivery
+# repo. The canonical rate has exactly one home, `mini-cohortl`
+# `methodology/pricing-models.md`. Everywhere else carries a pointer.
+#
+# This is the durable half of that rule. Without it the rule decays: the same
+# monthly rate was measured in 22 tracked files across 11 vaults on 2026-07-31,
+# and four of those files were a single deal line copied forward. Discipline
+# already failed this once.
+#
+# NARROWNESS IS THE WHOLE DESIGN. A dimension that fires on a client's own
+# revenue figure gets switched off within a week, which is worse than not having
+# it. Of 1,228 money-bearing lines measured across the estate, 852 are the
+# CLIENT's numbers — their revenue, comp bands, lost-revenue analysis — and they
+# are the raw material of every engagement. So three conditions must hold at once:
+#
+#   1. a money figure, with
+#   2. a RATE shape within ~50 characters of it (a price is a rate; a client's
+#      revenue figure almost never is), and
+#   3. a Cohort L / PSA / SOW / proposal token on the same line.
+#
+# Two false-positive classes found while building the classifier, both fixed here:
+#   - co-occurrence anywhere on a line is NOT evidence. "$N-NNM EBITDA at entry
+#     ... monthly board cadence, quarterly engagement surveys" put a rate word
+#     and a commercial word ~120 and ~150 chars from a market figure. Hence the
+#     bounded `.{0,50}` gap rather than a bare line match.
+#   - `our +rate` matched inside "GP per-h(our rate)" and promoted a client's own
+#     clinic economics to the top tier. Word boundaries are load-bearing below.
+#
+# Tier V carve-out — what Cohort L PAYS is not what it charges. Vendor
+# subscriptions, per-seat tiers and contractor bands are opex, they are not a
+# project price, and they are not David's to hold. Excluded unless the line also
+# carries an explicit charge-to-client term.
+#
+# Narrower than the classifier by design: grep is line-based, so the enclosing
+# heading is not consulted here. Fewer blocks, never more. /repo-audit and
+# `mini-cohortl bin/pricing-scan.py` do the wider judgment pass.
+# ===========================================================================
+_money='\$[0-9][0-9,]*(\.[0-9]+)?[ ]?[KkMm]?'
+_rate='(/ ?mo(nth)?|per month|a month|monthly|/ ?hr|/ ?hour|per hour|hourly'
+_rate+='|[0-9]+[- ]month|x ?[0-9]+ ?months?|build[- ]phase|build-and-handover'
+_rate+='|binding fee|retainer|fixed[- ]fee|per module)'
+# `[^.]` — the rate shape must be in the SAME SENTENCE as the figure. Metro's
+# client-facing roadmap says the killed Unifier overlay cost them "~$2M. We
+# propose a 7-month engagement": their sunk cost, one sentence before our
+# proposed duration. A plain `.{0,50}` gap read that as our pricing and would
+# have blocked every push from that vault on one of the client's own numbers.
+_tight="(${_money}[^.]{0,50}${_rate}|${_rate}[^.]{0,50}${_money})"
+
+_commercial='(\bPSA\b|\bSOW\b|\bMSA\b|statement of work|engagement letter'
+_commercial+='|\bproposals?\b|\bengagements?\b|[Cc]ohort ?[Ll]\b|cohortl'
+_commercial+='|build-and-handover|perpetual license|\bExhibit [A-Z]\b'
+_commercial+='|scoping brief|canonical pricing|\bwe charge\b|\bour (fee|rate|price|pricing)\b)'
+
+# What we PAY. Opex, stays.
+_vendor='(subscriptions?|/ ?u/ ?mo|per (user|seat)|\bseats?\b|\bcontractors?\b'
+_vendor+='|\bvendors?\b|\bopex\b|cost[_ -]?(monthly|view|tracker|base)'
+_vendor+='|third[- ]party cost|\bwe pay\b|\bour (spend|cost|bill)\b'
+_vendor+='|Claude Max|ChatGPT|OpenAI|Anthropic|Slack|Notion|Vercel|Supabase'
+_vendor+='|Google Workspace|tech[- ]stack'
+# What we pay PEOPLE is opex too. On the first live run in mini-cohortl this
+# dimension blocked a push on an engagement-structure note — an EOR premium and
+# a monthly tech-lead figure — because the carve-out knew the word "contractor"
+# and none of the vocabulary an actual employment arrangement uses.
+_vendor+='|\bEOR\b|aut[oó]nomo|payroll|salar(y|ies)|compensation|consulting agreement'
+_vendor+='|employment|TRADE registered|\bSEPE\b|\bTGSS\b|hiring|per[- ]engagement direct cost'
+# A figure describing what something COSTS is not a figure describing what we
+# CHARGE, and in a vault most of them are the client's. Precision Air's
+# knowledge-base carries "~$NNK/mo current spend" for their Google Ads and
+# "Estimated cost ~$N,NNN/mo replacing ~$NNN-N,NNN/mo current" for the voice
+# stack we are replacing. Both are the client's own economics, in CLIENT-FACING
+# decision notes, and both blocked the push.
+#
+# Deliberately not bare `cost`: Lumate labels our own quote "Cost ($NNK MVP +
+# ...)", and that must still block. `_charge` outranks this list anyway, so a
+# real MSA/SOW/retainer line is unaffected.
+_vendor+='|\bspend\b|estimated cost|current cost|running cost'
+# The client's own economics. A figure sitting beside "revenue", "EBITDA" or
+# "risk-of-loss" is describing THEIR business, which is the raw material of every
+# engagement and the half of the estate this rule exists to protect.
+_vendor+='|revenue|\bARR\b|EBITDA|risk[- ]of[- ]loss|top[- ]line|billings)'
+
+# Outranks the vendor carve-out: this really is a charge to a client.
+_charge='(\bMSA\b|\bSOW\b|\bPSA\b|build phase|retainer|\binvoiced?\b'
+_charge+='|scoping brief|statement of work|build-and-handover|\bExhibit [A-Z]\b'
+_charge+='|canonical pricing)'
+
+# `.githooks/` is exempt or this dimension matches its own pattern strings.
+_pricing_cands=$(tree_grep "$_tight" -- '*.md' 2>/dev/null \
+  | grep -vE '^(\.githooks/|\.gitleaks\.toml)' \
+  | grep -iE "$_commercial" || true)
+
+if [[ -n "$_pricing_cands" ]]; then
+  _keep=$(grep -iE "$_charge" <<<"$_pricing_cands" || true)
+  # Reported speech. Strip every quoted span; if no money figure survives, every
+  # figure on the line was inside quotation marks and belongs to whoever was
+  # speaking. Gendelman's call notes quote his brother's "$NN/month not $NNK"
+  # gut-check — a third party's view of what technology costs, in a line that
+  # also says "pricing", which is as close to our own terms as a sentence can
+  # look without being one. Lines carrying a _charge token never reach here, so
+  # a quoted price of OURS beside an MSA/SOW/PSA still blocks.
+  _rest=$(grep -viE "$_charge" <<<"$_pricing_cands" \
+    | grep -viE "$_vendor" \
+    | awk '{ t=$0; gsub(/"[^"]*"/,"",t); gsub(/\xe2\x80\x9c[^\xe2]*\xe2\x80\x9d/,"",t); if (t ~ /\$[0-9]/) print }' || true)
+  _pricing_hits=$(printf '%s\n%s\n' "$_keep" "$_rest" | grep -v '^[[:space:]]*$' | sort -u || true)
+
+  if [[ -n "$_pricing_hits" ]]; then
+    add_block "[13 pricing] Cohort L's own commercial terms are in a tracked file:
+$(cut -c1-160 <<<"$_pricing_hits" | sed 's/^/    /' | head -12)
+    What Cohort L charges belongs with David, not in a delivery repo. Canonical
+    home is mini-cohortl methodology/pricing-models.md; everywhere else carries a
+    pointer, e.g. 'pricing held by David (see the PSA)'. A pointer, not a silent
+    deletion — a deletion reads as 'there was never a price'.
+    If this is the CLIENT's own number or a vendor cost we PAY, it is a false
+    positive: report it rather than working around it, so the pattern gets fixed."
   fi
 fi
 
