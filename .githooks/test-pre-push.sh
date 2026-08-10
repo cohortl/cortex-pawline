@@ -379,6 +379,57 @@ else
   echo "  ✗ dim13 false-blocked employment compensation (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
 
+# --- Dimension 13: a transcript WARNS instead of blocking ---------------------
+# The regression this pins (2026-08-10, cortex-proforce): Joy Scott saying
+# "what our price floors are" about the CLIENT's own minimum price blocked the
+# push. A transcript is a verbatim record — both of this dimension's remedies
+# are edits, and editing a verbatim record is forbidden, so a hit there could
+# only ever be resolved by override. It must warn, and it must not block even
+# when the figure really is ours: the warning text carries the pointer rule.
+reset_clean
+mkdir -p internal/transcripts
+cat > internal/transcripts/2026-08-10-interview.md <<'EOF'
+# Transcript
+**Joy:** I got a new policy about what our price floors are — "minimum price
+for general pest control is $42 a month." The next payment of $42 is on the 31st.
+**Christian:** Dave said "we charge $88K/mo per the SOW" on the call.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "transcript with rate-shaped figures" >/dev/null 2>&1
+tx_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$tx_base"); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "verbatim record" <<<"$out"; then
+  echo "  ✓ dim13 warns (not blocks) on rate figures inside a transcript"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 transcript handling wrong (rc=$rc, want 0 + 'verbatim record'):"
+  echo "$out" | sed 's/^/      /' | head -8; fail=$((fail+1))
+fi
+
+# --- Dimension 11: bold labels with the colon INSIDE the stars ----------------
+# `**Name:**` is what /sync-granola-notes and the interview filings emit; the
+# extractor only knew `**Name**:` and scored every synced transcript "no usable
+# speaker labels", silently skipping the side-talk check on exactly the files
+# it was built for (found 2026-08-10). Three Cohort L turns before the first
+# external speaker must now be seen and warned about.
+reset_clean
+mkdir -p internal/transcripts
+cat > internal/transcripts/2026-08-10-call.md <<'EOF'
+# Transcript
+**Christian:** Are we live?
+**Christian:** One more internal thing before they join.
+**Christian:** Okay, she is in the waiting room.
+**Joy:** Hi everyone, thanks for having me.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "transcript with inside-colon bold labels" >/dev/null 2>&1
+lbl_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$lbl_base"); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "before the first external speaker" <<<"$out" \
+   && ! grep -q "2026-08-10-call.md (no usable speaker labels)" <<<"$out"; then
+  echo "  ✓ dim11 reads **Name:** labels and flags the pre-call stretch"; pass=$((pass+1))
+else
+  echo "  ✗ dim11 did not parse inside-colon bold labels (rc=$rc):"
+  echo "$out" | sed 's/^/      /' | head -8; fail=$((fail+1))
+fi
+
 # --- Registry resolution: candidate order, and FAIL CLOSED on absence ---------
 # Dimensions 5 and 12 both derive their needles from the client registry, so
 # whether the registry resolves decides whether two BLOCKING dimensions run at
