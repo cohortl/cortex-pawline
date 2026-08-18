@@ -689,7 +689,7 @@ fi
 # surface — and deliberately exempts internal/ and intake/, because verbatim
 # transcripts and build plans naturally name other parties and blocking those
 # is wrong. That exemption is correct for BODIES and wrong for PATHS: in April
-# a SPEAR PT prospect walkthrough sat git-tracked at
+# a cortex-spear-pt prospect walkthrough sat git-tracked at
 # cortex-lumate-health/intake/, and its own FILENAME carried the slug. Nothing
 # mechanical caught it for three months. A whole document filed under the wrong
 # tenant is a misfiling, not a mention, so the path form is a hard block.
@@ -740,8 +740,8 @@ if [[ "$registry_loaded" -eq 1 && ${#other_vaults[@]} -gt 0 ]]; then
       add_block "[12 cross-tenant path] file(s) in this vault are NAMED for another engagement:
 $(sed 's/^/    /' <<<"$path_hits" | head -15)
     This is $BASE. A document filed under another tenant's slug is misfiled, not
-    merely a mention — the SPEAR-in-Lumate case (2026-04, found 2026-07) looked
-    exactly like this. Remedy: git mv it into the correct cortex-{slug} vault,
+    merely a mention — a real cross-tenant misfiling case (2026-04, found 2026-07)
+    looked exactly like this. Remedy: git mv it into the correct cortex-{slug} vault,
     or rename if the slug is coincidental. Structural refs belong in docs/plans/."
     fi
 
@@ -770,8 +770,10 @@ fi
 #
 # The rule (mini-cohortl docs/plans/2026-07-31-pricing-out-of-delivery-repos.md):
 # what Cohort L CHARGES is David's to hold and does not belong in a delivery
-# repo. The canonical rate has exactly one home, `mini-cohortl`
-# `methodology/pricing-models.md`. Everywhere else carries a pointer.
+# repo. The canonical rate has exactly one home: `cohortl-finance`
+# `pricing/engagement-pricing.md` (moved there 2026-08-05 from mini-cohortl
+# `methodology/pricing-models.md`; core ADR-012 Amendment 4, update of
+# 2026-08-05). Everywhere else carries a pointer.
 #
 # This is the durable half of that rule. Without it the rule decays: the same
 # monthly rate was measured in 22 tracked files across 11 vaults on 2026-07-31,
@@ -835,13 +837,13 @@ _vendor+='|Google Workspace|tech[- ]stack'
 _vendor+='|\bEOR\b|aut[oó]nomo|payroll|salar(y|ies)|compensation|consulting agreement'
 _vendor+='|employment|TRADE registered|\bSEPE\b|\bTGSS\b|hiring|per[- ]engagement direct cost'
 # A figure describing what something COSTS is not a figure describing what we
-# CHARGE, and in a vault most of them are the client's. Precision Air's
+# CHARGE, and in a vault most of them are the client's. One vault's
 # knowledge-base carries "~$NNK/mo current spend" for their Google Ads and
 # "Estimated cost ~$N,NNN/mo replacing ~$NNN-N,NNN/mo current" for the voice
 # stack we are replacing. Both are the client's own economics, in CLIENT-FACING
 # decision notes, and both blocked the push.
 #
-# Deliberately not bare `cost`: Lumate labels our own quote "Cost ($NNK MVP +
+# Deliberately not bare `cost`: another vault labels our own quote "Cost ($NNK MVP +
 # ...)", and that must still block. `_charge` outranks this list anyway, so a
 # real MSA/SOW/retainer line is unaffected.
 _vendor+='|\bspend\b|estimated cost|current cost|running cost'
@@ -864,7 +866,7 @@ if [[ -n "$_pricing_cands" ]]; then
   _keep=$(grep -iE "$_charge" <<<"$_pricing_cands" || true)
   # Reported speech. Strip every quoted span; if no money figure survives, every
   # figure on the line was inside quotation marks and belongs to whoever was
-  # speaking. Gendelman's call notes quote his brother's "$NN/month not $NNK"
+  # speaking. One vault's call notes quote a family member's "$NN/month not $NNK"
   # gut-check — a third party's view of what technology costs, in a line that
   # also says "pricing", which is as close to our own terms as a sentence can
   # look without being one. Lines carrying a _charge token never reach here, so
@@ -879,9 +881,9 @@ if [[ -n "$_pricing_cands" ]]; then
   # are both edits, and editing a verbatim record is forbidden — so every hit
   # in internal/transcripts/, true or false, could only ever be resolved by
   # override. A check whose sole resolution is bypass must warn (ADR-012).
-  # FP class that proved it (2026-08-10, cortex-proforce): the CLIENT's
-  # first-person possessive — Joy Scott saying "what our price floors are"
-  # about ProForce's own minimum price. "our" belongs to the labelled speaker,
+  # FP class that proved it (2026-08-10, client-a): the CLIENT's first-person
+  # possessive — a client-side speaker saying "what our price floors are"
+  # about the CLIENT's own minimum price. "our" belongs to the labelled speaker,
   # which a line-based grep cannot see. Real Cohort L fee talk in a transcript
   # still surfaces here as a warning, and dim 11 watches the same files.
   _pricing_tx=$(grep -E '^internal/transcripts/' <<<"$_pricing_hits" || true)
@@ -891,16 +893,17 @@ if [[ -n "$_pricing_cands" ]]; then
     add_warn "[13 pricing] rate-shaped figure(s) in a transcript — verbatim record, not blocking:
 $(cut -c1-160 <<<"$_pricing_tx" | sed 's/^/    /' | head -12)
     Skim each: if it is Cohort L's own terms, the transcript stays verbatim but
-    the deal figure needs its pointer in methodology/pricing-models.md; if it is
-    the client's own number (their price, their spend), nothing to do."
+    the deal figure needs its pointer in cohortl-finance
+    pricing/engagement-pricing.md; if it is the client's own number (their
+    price, their spend), nothing to do."
   fi
 
   if [[ -n "$_pricing_hits" ]]; then
     add_block "[13 pricing] Cohort L's own commercial terms are in a tracked file:
 $(cut -c1-160 <<<"$_pricing_hits" | sed 's/^/    /' | head -12)
     What Cohort L charges belongs with David, not in a delivery repo. Canonical
-    home is mini-cohortl methodology/pricing-models.md; everywhere else carries a
-    pointer, e.g. 'pricing held by David (see the PSA)'. A pointer, not a silent
+    home is cohortl-finance pricing/engagement-pricing.md; everywhere else
+    carries a pointer, e.g. 'pricing held by David (see the PSA)'. A pointer, not a silent
     deletion — a deletion reads as 'there was never a price'.
     If this is the CLIENT's own number or a vendor cost we PAY, it is a false
     positive: report it rather than working around it, so the pattern gets fixed."

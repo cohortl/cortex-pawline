@@ -182,7 +182,7 @@ git add -A >/dev/null 2>&1; git commit -qm "poison: confidential marker" >/dev/n
 expect_block "dim9 confidential marker" "markers" "$BASE"
 
 # --- Dimension 12: another tenant's slug in a FILE PATH -----------------------
-# The regression case: in April a SPEAR PT walkthrough sat tracked inside
+# The regression case: in April a cortex-spear-pt walkthrough sat tracked inside
 # cortex-lumate-health/intake/, betrayed by its own filename. Dimension 5 does
 # not cover it — intake/ is team-tier and deliberately exempt there.
 reset_clean
@@ -380,7 +380,7 @@ else
 fi
 
 # --- Dimension 13: a transcript WARNS instead of blocking ---------------------
-# The regression this pins (2026-08-10, cortex-proforce): Joy Scott saying
+# The regression this pins (2026-08-10, client-a): a client-side speaker saying
 # "what our price floors are" about the CLIENT's own minimum price blocked the
 # push. A transcript is a verbatim record — both of this dimension's remedies
 # are edits, and editing a verbatim record is forbidden, so a hit there could
@@ -390,8 +390,8 @@ reset_clean
 mkdir -p internal/transcripts
 cat > internal/transcripts/2026-08-10-interview.md <<'EOF'
 # Transcript
-**Joy:** I got a new policy about what our price floors are — "minimum price
-for general pest control is $42 a month." The next payment of $42 is on the 31st.
+**Robin:** I got a new policy about what our price floors are — "minimum price
+for the base service plan is $42 a month." The next payment of $42 is on the 31st.
 **Christian:** Dave said "we charge $88K/mo per the SOW" on the call.
 EOF
 git add -A >/dev/null 2>&1; git commit -qm "transcript with rate-shaped figures" >/dev/null 2>&1
@@ -417,7 +417,7 @@ cat > internal/transcripts/2026-08-10-call.md <<'EOF'
 **Christian:** Are we live?
 **Christian:** One more internal thing before they join.
 **Christian:** Okay, she is in the waiting room.
-**Joy:** Hi everyone, thanks for having me.
+**Robin:** Hi everyone, thanks for having me.
 EOF
 git add -A >/dev/null 2>&1; git commit -qm "transcript with inside-colon bold labels" >/dev/null 2>&1
 lbl_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
