@@ -59,8 +59,8 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$REPO_ROOT"
 
-BASE=$(basename "$REPO_ROOT")            # e.g. cortex-proforce
-SLUG="${BASE#cortex-}"                    # e.g. proforce
+BASE=$(basename "$REPO_ROOT")            # e.g. cortex-<slug>
+SLUG="${BASE#cortex-}"                    # e.g. <slug>
 
 # --- Loud, logged override -------------------------------------------------
 if [[ "${CORTEX_GATE_OVERRIDE:-}" == "1" ]]; then
@@ -302,21 +302,44 @@ while IFS= read -r f; do
 done < <(tracked | grep -iE '\.(md|csv|txt|json|yaml|yml)$' || true)
 
 # ===========================================================================
-# Dimension 4 — PHI / healthcare (WARN; health clients only)
+# Dimension 4 — PHI / healthcare (WARN; health vaults only)
+#
+# The arming list is READ, not hardcoded. It used to be a `case "$SLUG" in
+# a|b|c)` literal right here — which meant this file, shipped in the
+# `@cohortl/core` npm tarball via the `templates/` allowlist, told every tenant
+# which of the other named clients were healthcare clients. Exactly the mistake
+# `vault-slugs.txt` exists to prevent, in the same file.
+#
+# `.githooks/vault-phi.txt` is generated from the registry's PHI column by
+# core/scripts/generate-vault-slugs.ts and installed beside this hook, so it
+# needs no path resolution — same design as vault-slugs.txt.
+#
+# ABSENT FILE ARMS EVERY VAULT. This dimension only warns, so over-arming costs
+# a false warning and under-arming costs a missed patient identifier. A silently
+# disarmed check is the failure mode this whole gate was written against.
 # ===========================================================================
-case "$SLUG" in
-  lumate-health|rhythm-healthcare|platinum-dermatology|spear-pt|curalink|curalinc)
-# Bare "PHI" is dropped on purpose — in a health-governance vault it is the
-    # TOPIC (policy prose about handling PHI), not an identifier. Warn only on
-    # patterns that look like actual patient identifiers.
-    phi_hits=$(tree_grep_i '(MRN|medical record number|ICD-?10 code|diagnosis code|patient (id|name|dob)|date of birth)' -- "${CLIENT_DIRS[@]}" || true)
-    if [[ -n "$phi_hits" ]]; then
-      add_warn "[4 PHI] health-client vault — possible patient identifiers in the client surface:
+PHI_FILE="$REPO_ROOT/.githooks/vault-phi.txt"
+phi_armed=1
+if [[ -f "$PHI_FILE" ]]; then
+  phi_armed=0
+  while IFS= read -r _p; do
+    _p="${_p%%#*}"; _p="$(echo "$_p" | tr -d '[:space:]')"
+    [[ -z "$_p" ]] && continue
+    [[ "$_p" == "$BASE" ]] && { phi_armed=1; break; }
+  done < "$PHI_FILE"
+fi
+
+if [[ "$phi_armed" == "1" ]]; then
+  # Bare "PHI" is dropped on purpose — in a health-governance vault it is the
+  # TOPIC (policy prose about handling PHI), not an identifier. Warn only on
+  # patterns that look like actual patient identifiers.
+  phi_hits=$(tree_grep_i '(MRN|medical record number|ICD-?10 code|diagnosis code|patient (id|name|dob)|date of birth)' -- "${CLIENT_DIRS[@]}" || true)
+  if [[ -n "$phi_hits" ]]; then
+    add_warn "[4 PHI] possible patient identifiers in the client surface:
 $(sed 's/^/    /' <<<"$phi_hits" | head -20)
     Run /repo-audit for a dedicated PHI pass; move identifiers to raw/ if real."
-    fi
-    ;;
-esac
+  fi
+fi
 
 # ===========================================================================
 # Client registry resolution — the input to dimensions 5 AND 12
@@ -553,7 +576,7 @@ fi
 # field, which reference notes do not carry. Two refinements matter:
 #
 #   * Match ANY audience value, not the literal `client`. The field holds the
-#     client slug (`audience: metro`, `audience: latite`) as often as `client`.
+#     client slug (`audience: <slug>`) as often as the literal `client`.
 #   * Anchor the status value. `status: draft | active | validated` inside a
 #     CONVENTIONS.md schema block is documentation, not frontmatter, and was the
 #     single largest source of false positives.
@@ -696,9 +719,13 @@ fi
 #
 # False-positive control:
 #   - `cortex-<slug>` matches any other vault (unambiguous by construction).
-#   - a BARE `<slug>` only counts when it is hyphenated (spear-pt,
-#     hidden-harbor, oxford-road). Single-token slugs (acs, pe, metro, latite)
-#     are far too collidable to match bare and are left to /repo-audit.
+#   - a BARE `<slug>` only counts when it is HYPHENATED (`<word>-<word>`, e.g.
+#     the showcase vault's `paw-line` shape). A single-token slug — and several
+#     real ones are a single short word, or even two letters — collides with
+#     ordinary prose far too often to match bare, so those are left to
+#     /repo-audit. (Worked examples here name no vault on purpose: this file is
+#     the template, it ships in the npm tarball, and it is read inside every
+#     other tenant's clone.)
 #   - docs/plans/ (incl. archive/) and root chrome are exempt: they reference
 #     sibling vaults as structural templates, same carve-out as dimension 5.
 #   - docs/research/<subject>/ is exempt: that prefix is the declared convention
