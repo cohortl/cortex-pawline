@@ -167,11 +167,11 @@ tree_grep_fixed_i() {
 # Dimension 1 — Tier triage (BLOCK)
 # raw/ committed · recordings tracked anywhere · bulk-export dirs tracked.
 # ===========================================================================
-raw_tracked=$(tracked 'raw' || true)
+raw_tracked=$(tracked 'raw' | grep -v '^raw/README\.md$' || true)
 if [[ -n "$raw_tracked" ]]; then
   add_block "[1 tier] raw/ is LOCAL-ONLY but these files are committed:
 $(sed 's/^/    /' <<<"$raw_tracked")
-    Remedy: git rm -r --cached the paths; confirm raw/ is in .gitignore."
+    Remedy: git rm -r --cached the paths; only raw/README.md may be tracked."
 fi
 
 rec_tracked=$(tracked | grep -iE '\.(mp3|mp4|m4a|wav|mov|mkv|aac)$' || true)
@@ -827,9 +827,10 @@ fi
 #     clinic economics to the top tier. Word boundaries are load-bearing below.
 #
 # Tier V carve-out — what Cohort L PAYS is not what it charges. Vendor
-# subscriptions, per-seat tiers and contractor bands are opex, they are not a
-# project price, and they are not David's to hold. Excluded unless the line also
-# carries an explicit charge-to-client term.
+# subscriptions, per-seat tiers, hosting, and contractor bands are opex, they are
+# not a project price, and they are not David's to hold. So is the question of
+# WHICH CARD settles a bill. Excluded unless the line also carries an explicit
+# charge-to-client term, which outranks the carve-out in every case.
 #
 # Narrower than the classifier by design: grep is line-based, so the enclosing
 # heading is not consulted here. Fewer blocks, never more. /repo-audit and
@@ -877,12 +878,32 @@ _vendor+='|\bspend\b|estimated cost|current cost|running cost'
 # The client's own economics. A figure sitting beside "revenue", "EBITDA" or
 # "risk-of-loss" is describing THEIR business, which is the raw material of every
 # engagement and the half of the estate this rule exists to protect.
-_vendor+='|revenue|\bARR\b|EBITDA|risk[- ]of[- ]loss|top[- ]line|billings)'
+_vendor+='|revenue|\bARR\b|EBITDA|risk[- ]of[- ]loss|top[- ]line|billings'
+# WHO PAYS a line item is not WHAT WE CHARGE for one, and the carve-out knew
+# every word for a cost except the words for settling one. FP that proved it
+# (2026-08-19, cortex-latite): an SFTP build plan asked "Billing: which card
+# carries the ~$5/mo ... Default: the Cohort L card used for the rest of the
+# stack". That is a Hetzner VPS bill we pay. It matched because `$5` + `/mo`
+# sit adjacent and the line says "Cohort L" — and it blocked a push whose
+# commit touched two unrelated files, because grep scans the tree, not the diff.
+_vendor+='|\bcards?\b|billed to|\bbilling\b|who pays|payment method|on our card'
+# Infrastructure we rent — the same class as the SaaS brands above, the other
+# half of the stack. A hosting line is opex whoever it belongs to, so this is
+# safe in both directions: ours is not a price, and a client's is their number.
+_vendor+='|Hetzner|DigitalOcean|Linode|Netlify|Railway|render\.com|Fly\.io|Cloudflare'
+_vendor+='|\bAWS\b|\bGCP\b|\bAzure\b|Twilio|ElevenLabs|Bitwarden|Granola|Calendly'
+_vendor+='|\bVPS\b|\bhosting\b)'
 
 # Outranks the vendor carve-out: this really is a charge to a client.
 _charge='(\bMSA\b|\bSOW\b|\bPSA\b|build phase|retainer|\binvoiced?\b'
 _charge+='|scoping brief|statement of work|build-and-handover|\bExhibit [A-Z]\b'
-_charge+='|canonical pricing)'
+_charge+='|canonical pricing'
+# Explicit "this is OUR price" phrasing has to outrank every carve-out above,
+# or widening the vendor list could mask a real fee line that happens to
+# mention a card or a spend. Word boundaries are load-bearing for the same
+# reason they are in `_commercial`: `our rate` must not match inside
+# "GP per-h(our rate)", which is a client's own clinic economics.
+_charge+='|\bwe charge\b|\bour (fee|rate|price|pricing)\b|charged? to the client)'
 
 # `.githooks/` is exempt or this dimension matches its own pattern strings.
 _pricing_cands=$(tree_grep "$_tight" -- '*.md' 2>/dev/null \

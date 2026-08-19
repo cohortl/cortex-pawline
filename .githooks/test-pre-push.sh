@@ -119,6 +119,7 @@ reset_clean() {
   # tracked tree, not the diff, so a leftover poison file re-trips later cases.
   rm -rf knowledge-base internal config raw intake docs
   mkdir -p knowledge-base/deliverables internal config raw
+  printf '# Raw files\n\nEverything except this README is local-only.\n' > raw/README.md
   # A clean, legitimate client-facing note.
   cat > knowledge-base/glossary.md <<'EOF'
 # Glossary
@@ -262,6 +263,46 @@ if [[ $rc -eq 0 ]]; then
 else
   echo "  ✗ dim13 false-blocked our own opex (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
+
+# --- Dimension 13 control: WHICH CARD settles a bill is not a price -----------
+# The regression this pins, cortex-latite 2026-08-19. An SFTP build plan carried
+# a blocker table asking which card should carry the ~$5/mo Hetzner VPS bill.
+# `$5` sits adjacent to `/mo` and the line says "Cohort L", so it matched — and
+# it BLOCKED a push whose commit touched two unrelated files, because this
+# dimension greps the tree rather than the diff. Nothing in the carve-out knew
+# the vocabulary of settling a bill: card, billing, billed to.
+reset_clean
+mkdir -p internal/build-plans
+cat > internal/build-plans/sftp-endpoint-plan.md <<'EOF'
+# SFTP endpoint
+
+| # | Blocker | Owner | Unblock |
+|---|---------|-------|---------|
+| 1 | No VPS account exists | Justin | Create a Hetzner Cloud account on the Cohort L card |
+| 2 | Billing: which card carries the ~$5/mo | Justin | Default: the Cohort L card used for the rest of the stack |
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: who pays the hosting bill" >/dev/null 2>&1
+card_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$card_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 exempts which-card-pays and hosting cost"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked a hosting bill we pay (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# --- Dimension 13: widening the carve-out must not mask a real fee ------------
+# The risk the fix above introduces. `card`, `billing` and `spend` now excuse a
+# line, so a genuine fee line that mentions any of them must still block on the
+# strength of its own charge language. `our (fee|rate|price|pricing)` and
+# `we charge` outrank every carve-out for exactly this case.
+reset_clean
+mkdir -p internal
+cat > internal/engagement-note.md <<'EOF'
+# Engagement note
+Our rate is $20K/mo for this build, billed to the card they have on file.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: our rate beside a card" >/dev/null 2>&1
+expect_block "dim13 our own rate still blocks beside billing language" "pricing" "$BASE"
 
 # --- Dimension 13 control: a client figure ADJACENT to our duration ------------
 # The regression this pins, found on cortex-metro 2026-07-31 while cleaning it:
