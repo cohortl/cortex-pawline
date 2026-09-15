@@ -82,6 +82,18 @@ run_hook_home() {
     | env -u CORTEX_CLIENT_REGISTRY HOME="$home" "$@" bash "$HOOK" 2>&1
 }
 
+# Same as run_hook, but with a minimal PATH so `command -v gitleaks` fails and
+# the hook takes its bundled-regex FALLBACK for dimension 2. The fallback is the
+# code path on any machine without gitleaks — and the one that tripped on a quoted
+# env-var name (2026-09-03) — so its cases must run even where gitleaks is
+# installed, or they only ever pass by not running.
+run_hook_fallback() {
+  local base="${1:-$ZERO40}"
+  local tip; tip=$(git rev-parse HEAD)
+  printf 'refs/heads/main %s refs/heads/main %s\n' "$tip" "$base" \
+    | env PATH=/usr/bin:/bin bash "$HOOK" 2>&1
+}
+
 pass=0; fail=0
 
 # <label> <expected-rc: 0|nonzero> <home> <base-sha> <grep-token...> — the
@@ -114,10 +126,38 @@ expect_block() {  # <label> <grep-token> [base-sha]
   fi
 }
 
+# <label> <grep-token> [base-sha] — like expect_block, through the dim 2 fallback.
+expect_block_fallback() {
+  local label="$1" token="$2" base="${3:-$ZERO40}" out
+  out=$(run_hook_fallback "$base"); local rc=$?
+  if [[ $rc -ne 0 ]] && grep -qi -- "$token" <<<"$out"; then
+    echo "  ✓ blocked: $label"; pass=$((pass+1))
+  else
+    echo "  ✗ NOT blocked (rc=$rc, token '$token' missing): $label"
+    echo "$out" | sed 's/^/      /'
+    fail=$((fail+1))
+  fi
+}
+
+# <label> [base-sha] — the tree must pass, on BOTH dim 2 engines: whatever this
+# machine has (gitleaks or fallback) and the forced fallback.
+expect_pass_both() {
+  local label="$1" base="${2:-$ZERO40}" out rc out_fb rc_fb
+  out=$(run_hook "$base"); rc=$?
+  out_fb=$(run_hook_fallback "$base"); rc_fb=$?
+  if [[ $rc -eq 0 && $rc_fb -eq 0 ]]; then
+    echo "  ✓ passes: $label"; pass=$((pass+1))
+  else
+    echo "  ✗ false-blocked (rc=$rc, fallback rc=$rc_fb): $label"
+    { [[ $rc -ne 0 ]] && echo "$out"; [[ $rc_fb -ne 0 ]] && echo "$out_fb"; } | grep -vE '^\s*$' | sed 's/^/      /' | head -30
+    fail=$((fail+1))
+  fi
+}
+
 reset_clean() {
   # Must clear EVERY directory any test plants into. Dimension 12 scans the
   # tracked tree, not the diff, so a leftover poison file re-trips later cases.
-  rm -rf knowledge-base internal config raw intake docs
+  rm -rf knowledge-base internal config raw intake docs src web deliverables
   mkdir -p knowledge-base/deliverables internal config raw
   printf '# Raw files\n\nEverything except this README is local-only.\n' > raw/README.md
   # A clean, legitimate client-facing note.
@@ -147,16 +187,87 @@ git add -A >/dev/null 2>&1; git commit -qm "poison: aws key" >/dev/null 2>&1
 expect_block "dim2 AWS key" "secret" "$BASE"
 
 # --- Dimension 3: an SSN -----------------------------------------------------
+# The SSA example SSN, deliberately: outside src/ and web/ the app-tier
+# exemption below must not reach, so this doubles as its prose control.
 reset_clean
 echo "employee ssn: 123-45-6789" > internal/hr.md
 git add -A >/dev/null 2>&1; git commit -qm "poison: ssn" >/dev/null 2>&1
-expect_block "dim3 SSN" "PII" "$BASE"
+expect_block "dim3 SSN (SSA example SSN in prose still blocks)" "PII" "$BASE"
 
 # --- Dimension 3b: a Luhn-valid credit card ---------------------------------
+# Same: the Visa test PAN in prose is a block; only app code may carry it.
 reset_clean
 echo "card on file: 4111 1111 1111 1111" > internal/billing.md   # Visa test #, Luhn-valid
 git add -A >/dev/null 2>&1; git commit -qm "poison: cc" >/dev/null 2>&1
-expect_block "dim3 credit card (Luhn)" "credit-card" "$BASE"
+expect_block "dim3 credit card (Visa test PAN in prose still blocks)" "credit-card" "$BASE"
+
+# --- App tier (src/, web/): documented fixtures PASS, real shapes still BLOCK ---
+# ADR-012 Amendment 7. On 2026-09-03 one vault's pushes were blocked three times
+# on the code that tests its own PII bouncer: the Visa test PAN, the SSA example
+# SSN, and `clientSecret: 'IDP_CLIENT_SECRET'` — an env-var NAME, matched by the
+# dim 2 regex fallback. The passing case mirrors those files; every case after it
+# is the same shape with a real-looking value, and must still block. Real-shaped
+# values here are invented (Luhn-valid, never issued), not anyone's.
+reset_clean
+mkdir -p src/auth src/prewrite web/lib
+cat > src/auth/oidc.ts <<'EOF'
+const ENV_NAME = { clientId: 'IDP_CLIENT_ID', clientSecret: 'IDP_CLIENT_SECRET', redirectUri: 'IDP_REDIRECT_URI' } as const;
+export const readIdpConfig = () => ({ clientSecret: process.env[ENV_NAME.clientSecret] });
+EOF
+cat > src/prewrite/bouncer.test.ts <<'EOF'
+const sample = 'SSN 123-45-6789, born on 03/14/1985, card 4111 1111 1111 1111 code on the back is 737';
+expect(luhnValid('4111 1111 1111 1111')).toBe(true);
+expect(luhnValid('5555 5555 5555 4444')).toBe(true);
+expect(redact(sample)).not.toContain('123-45-6789');
+EOF
+cat > web/lib/fixtures.ts <<'EOF'
+export const cardFixture = { kind: 'payment-card', text: '4242 4242 4242 4242' };
+export const envName = { password: 'DB_ADMIN_PASSWORD' };
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: app-tier fixtures" >/dev/null 2>&1
+expect_pass_both "app tier: documented test PANs, SSA example SSN and quoted env-var names" "$BASE"
+
+reset_clean
+mkdir -p src/eval
+echo "const sample = 'card 4539 1488 0343 6467 was charged twice';" > src/eval/fixture.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: real-shaped PAN in src/" >/dev/null 2>&1
+expect_block "app tier: a Luhn-valid PAN that is NOT a documented test number" "credit-card" "$BASE"
+
+reset_clean
+mkdir -p src/eval
+echo "const sample = 'test card 4111 1111 1111 1111, then 4539 1488 0343 6467';" > src/eval/fixture.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: real PAN beside a test PAN" >/dev/null 2>&1
+expect_block "app tier: a real-shaped PAN beside a test PAN on the same line" "credit-card" "$BASE"
+
+reset_clean
+mkdir -p src/eval
+echo "const sample = 'SSN 312-58-4701';" > src/eval/fixture.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: real-shaped SSN in src/" >/dev/null 2>&1
+expect_block "app tier: an SSN that is NOT the SSA example" "PII" "$BASE"
+
+reset_clean
+mkdir -p src/eval
+echo "const sample = 'SSN 123-45-6789 and SSN 312-58-4701';" > src/eval/fixture.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: real SSN beside the example" >/dev/null 2>&1
+expect_block "app tier: a real-shaped SSN beside the SSA example on the same line" "PII" "$BASE"
+
+reset_clean
+mkdir -p src/auth
+echo "const cfg = { clientSecret: 'IDP_CLIENT_SECRET', password: 'Zq8vB2mN4kL9pR3sT7' };" > src/auth/oidc.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: real value beside an env-var name" >/dev/null 2>&1
+expect_block_fallback "app tier: a secret VALUE beside an env-var NAME on the same line" "secret" "$BASE"
+
+reset_clean
+mkdir -p src/auth
+echo "const cfg = { clientSecret: 'idp_client_secret_value' };" > src/auth/oidc.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: quoted lowercase value" >/dev/null 2>&1
+expect_block_fallback "app tier: a quoted value that is not SCREAMING_SNAKE still blocks" "secret" "$BASE"
+
+reset_clean
+mkdir -p src/auth
+echo "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" > src/auth/creds.ts
+git add -A >/dev/null 2>&1; git commit -qm "poison: real-shaped credential in src/" >/dev/null 2>&1
+expect_block_fallback "app tier: a credential value in src/ still blocks" "secret" "$BASE"
 
 # --- Dimension 5: another client's name in this vault ------------------------
 reset_clean
@@ -193,8 +304,8 @@ git add -A >/dev/null 2>&1; git commit -qm "poison: cross-tenant path" >/dev/nul
 expect_block "dim12 cross-tenant slug in file path" "cross-tenant path" "$BASE"
 
 # --- Dimension 12 control: docs/research/<subject>/ is EXEMPT ------------------
-# A vault legitimately researching another entity (cortex-pe holds
-# docs/research/hidden-harbor/ to seed its own KPI schema) must not block.
+# A vault legitimately researching another entity (one vault holds
+# docs/research/<a-sibling-slug>/ to seed its own KPI schema) must not block.
 reset_clean
 mkdir -p docs/research/northwind-partners
 echo "public portfolio research seeding our own schema" > docs/research/northwind-partners/kpi-shape.md
@@ -397,6 +508,136 @@ mkdir -p internal
 printf '# Note\nDave said "we charge $88K/mo per the SOW" on the call.\n' > internal/note.md
 git add -A >/dev/null 2>&1; git commit -qm "poison: our quoted price with a contract token" >/dev/null 2>&1
 expect_block "dim13 our own price, quoted, beside a SOW still blocks" "pricing" "$BASE"
+
+# <label> [base-sha] — dim 13 must WARN with the third-party wording and NOT block.
+expect_dim13_warn() {
+  local label="$1" base="${2:-$ZERO40}" out rc
+  out=$(run_hook "$base"); rc=$?
+  if [[ $rc -eq 0 ]] && grep -q "third-party fee figure" <<<"$out"; then
+    echo "  ✓ warned only: $label"; pass=$((pass+1))
+  else
+    echo "  ✗ expected a third-party WARN, got rc=$rc: $label"
+    echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+
+# --- Dimension 13: a COMPETITOR's inferred fee is not our fee -----------------
+# The regression this pins (2026-09-14, one vault's intake/research/): a Gemini
+# deep-research note carried a competitor's INFERRED monthly retainer beside
+# "Engagement economics". `retainer` is a _charge token, _charge outranked every
+# carve-out, and every push from the vault blocked until the research was
+# reworded to dodge the regex. The line below is verbatim. It reaches dim 13 on
+# "Engagement" alone; "inferred" is what must downgrade it.
+reset_clean
+mkdir -p intake/research/gemini
+cat > intake/research/gemini/2026-09-11-competitors-instalily-modern-industrials.md <<'EOF'
+# Competitors: Instalily, Modern Industrials
+
+> * Engagement economics: Monthly retainer pricing is inferred to range between $20,000 and $45,000 per month ($240,000 to $540,000 annualized) based on early-stage forward-deployed engineering compensation economics
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: competitor inferred fee" >/dev/null 2>&1
+expect_dim13_warn "dim13 competitor's inferred retainer in research warns, does not block" "$BASE"
+
+# --- Dimension 13: the same sentence, said to be OURS, still blocks -----------
+# `_ours` outranks every marker: "Cohort L's ... retainer" is ours whatever
+# attribution word sits beside it, and whatever folder it is in.
+reset_clean
+mkdir -p intake/research/gemini
+cat > intake/research/gemini/2026-09-11-competitors-instalily-modern-industrials.md <<'EOF'
+# Competitors: Instalily, Modern Industrials
+
+> * Engagement economics: Cohort L's monthly retainer is $20,000 and is inferred to range between $20,000 and $45,000 per month ($240,000 to $540,000 annualized) based on early-stage forward-deployed engineering compensation economics
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: our retainer in research" >/dev/null 2>&1
+expect_block "dim13 'Cohort L's monthly retainer' blocks even in research with a marker" "pricing" "$BASE"
+
+# --- Dimension 13: `their retainer` in research warns --------------------------
+# The bare sentence carries no _commercial token, so it never reaches dim 13 at
+# all; the file name supplies one ("engagement") so the carve-out is what is
+# tested, not the candidate filter.
+reset_clean
+mkdir -p intake/research
+cat > intake/research/2026-09-12-competitor-engagement-models.md <<'EOF'
+# Competitor engagement models
+their retainer is $30k/month (Modern Industrials)
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: their retainer" >/dev/null 2>&1
+expect_dim13_warn "dim13 'their retainer' in research warns" "$BASE"
+
+# --- Dimension 13: a retainer line in deliverables/ blocks, marker or not ------
+# Client-tier files never get the downgrade.
+reset_clean
+mkdir -p deliverables
+cat > deliverables/proposal.md <<'EOF'
+# Proposal
+retainer: $30k/month
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: retainer in a deliverable" >/dev/null 2>&1
+expect_block "dim13 retainer figure in deliverables/ blocks" "pricing" "$BASE"
+
+reset_clean
+mkdir -p deliverables
+cat > deliverables/proposal.md <<'EOF'
+# Proposal
+their retainer is reportedly $30k/month (Modern Industrials)
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: marked figure in a deliverable" >/dev/null 2>&1
+expect_block "dim13 client-tier file blocks even with an attribution marker" "pricing" "$BASE"
+
+# --- Dimension 13: config/third-parties.txt names the party ---------------------
+# Same line, outside intake/research/, no marker. With the list it warns; with
+# the list absent it BLOCKS — the list is the only thing excusing it, and a
+# missing list must fail closed rather than silently skip.
+reset_clean
+mkdir -p internal config
+printf '# one name per line\n\nModern Industrials\n' > config/third-parties.txt
+cat > internal/competitive-notes.md <<'EOF'
+# Notes
+Modern Industrials quotes a retainer of $30k/month per engagement.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: listed third party" >/dev/null 2>&1
+expect_dim13_warn "dim13 party listed in config/third-parties.txt warns" "$BASE"
+
+reset_clean
+mkdir -p internal
+cat > internal/competitive-notes.md <<'EOF'
+# Notes
+Modern Industrials quotes a retainer of $30k/month per engagement.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: unlisted party, no marker" >/dev/null 2>&1
+expect_block "dim13 unlisted party with no marker still blocks (fail closed)" "pricing" "$BASE"
+
+# --- Dimension 13: citation number after the figure (Gemini style) ------------
+reset_clean
+mkdir -p internal
+cat > internal/market-scan.md <<'EOF'
+# Market scan
+Typical forward-deployed engagements run at $45,000 per month18. Retainer models dominate.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: cited figure" >/dev/null 2>&1
+expect_dim13_warn "dim13 citation number right after the figure warns" "$BASE"
+
+# --- Dimension 13: `our retainer` boundary --------------------------------------
+# New token, so its boundary gets a fixture: "labor-hour retainer" contains
+# "hour retainer" and must not read as `our retainer`. Path is research and
+# the party is named, so the carve-out applies and it must NOT block.
+reset_clean
+mkdir -p intake/research
+cat > intake/research/2026-09-12-competitor-engagement-models.md <<'EOF'
+# Competitor engagement models
+Modern Industrials bills a labor-hour retainer of $30k/month per engagement.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: hour retainer boundary" >/dev/null 2>&1
+expect_dim13_warn "dim13 'labor-hour retainer' does not match 'our retainer'" "$BASE"
+
+reset_clean
+mkdir -p intake/research
+cat > intake/research/2026-09-12-competitor-engagement-models.md <<'EOF'
+# Competitor engagement models
+Our retainer is $30k/month per engagement, versus theirs (Modern Industrials).
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: our retainer in research" >/dev/null 2>&1
+expect_block "dim13 'our retainer' blocks even in research" "pricing" "$BASE"
 
 # --- Dimension 13 control: what we pay PEOPLE is opex too ---------------------
 # The regression this pins: on the first live run of dimension 13 (mini-cohortl,

@@ -163,6 +163,33 @@ tree_grep_fixed_i() {
   git grep -I -n -i -F -e "$needle" "$TIP" "$@" 2>/dev/null | sed "s/^${TIP}://"
 }
 
+# --- App-tier fixtures (dimensions 2 and 3) ---------------------------------
+# A vault that carries an app (src/, web/) commits code that TESTS its own PII
+# controls, and that code needs the synthetic values the whole industry uses:
+# the card networks' published test PANs and the one SSN the Social Security
+# Administration has never issued. Nothing is behind them — no card, no person —
+# yet the gate blocked three pushes in one evening (2026-09-03) on exactly those
+# fixtures plus a quoted env-var NAME. ADR-012 Amendment 7.
+#
+# The exemption is by VALUE and only under the app tier. Anything else stays a
+# block: a real-shaped number in src/, a documented test number in prose under
+# internal/ or knowledge-base/, and a real value beside a fixture on the same
+# line (the line is re-tested after the fixture is removed).
+APP_TIER_RE='^(src|web)/'
+# Documented test PANs — the numbers every payment provider's sandbox docs
+# publish (Visa, Mastercard, Discover, JCB, Diners). Digits only; dim 3 only
+# ever sees the 4-4-4-4 grouped form, so Amex's 4-6-5 numbers never reach it.
+TEST_PANS='4111111111111111 4012888888881881 4242424242424242 5555555555554444 5105105105105100 2223003122003222 6011111111111117 6011000990139424 3566002020360505 3056930009020004'
+# The SSA's own example SSN. A fixture that needs a fake SSN uses this one;
+# any other valid-shaped SSN is a block, in app code or not.
+TEST_SSN='123-45-6789'
+# A quoted, all-caps, underscored identifier is the NAME a secret is read from
+# (`clientSecret: 'IDP_CLIENT_SECRET'`), never the secret itself.
+ENV_NAME_RE="[\"'][A-Z][A-Z0-9]*(_[A-Z0-9]+)+[\"']"
+# Hit lines are "<path>:<line>:<content>", so the path anchors at column 1.
+is_app_hit() { [[ "$1" =~ $APP_TIER_RE ]]; }
+is_test_pan() { [[ " $TEST_PANS " == *" $1 "* ]]; }
+
 # ===========================================================================
 # Dimension 1 — Tier triage (BLOCK)
 # raw/ committed · recordings tracked anywhere · bulk-export dirs tracked.
@@ -234,7 +261,22 @@ else
   # Drop base64 data-URI blobs (embedded audio/image in HTML deliverables) — a
   # long base64 string trips vendor-key shapes by chance. Truncate display so a
   # matched giant line can't flood the report.
-  sec_hits=$(tree_grep_i "$SECRET_RE" | grep -vE '^(\.githooks/|\.gitleaks\.toml:)' | grep -vE ';base64,|data:[a-z]+/[a-z0-9.+-]+;base64' | cut -c1-200 || true)
+  sec_hits=$(tree_grep_i "$SECRET_RE" | grep -vE '^(\.githooks/|\.gitleaks\.toml:)' | grep -vE ';base64,|data:[a-z]+/[a-z0-9.+-]+;base64' || true)
+  # App tier: blank out every quoted env-var NAME and re-test the line. A real
+  # value beside a name (`clientSecret: 'IDP_CLIENT_SECRET', password: '…'`)
+  # survives the blanking and still blocks. Done before the display truncation
+  # so a value past column 200 cannot hide behind a name before it.
+  if [[ -n "$sec_hits" ]]; then
+    _sec_kept=""
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      if is_app_hit "$line"; then
+        grep -qiE "$SECRET_RE" <<<"$(sed -E "s/$ENV_NAME_RE/\"\"/g" <<<"$line")" || continue
+      fi
+      _sec_kept+="$line"$'\n'
+    done <<<"$sec_hits"
+    sec_hits=$(cut -c1-200 <<<"$_sec_kept" | grep -v '^$' || true)
+  fi
   if [[ -n "$sec_hits" ]]; then
     add_block "[2 secrets] high-confidence credential pattern(s) in committed content:
 $(sed 's/^/    /' <<<"$sec_hits" | head -40)
@@ -256,7 +298,21 @@ fi
 # ===========================================================================
 # SSN — the two dashes make the shape specific enough without a word boundary
 # ('\b' is not portable across git grep's ERE engine).
-ssn_hits=$(tree_grep '[0-9]{3}-[0-9]{2}-[0-9]{4}' | grep -vE '^\.githooks/' || true)
+SSN_RE='[0-9]{3}-[0-9]{2}-[0-9]{4}'
+ssn_hits=$(tree_grep "$SSN_RE" | grep -vE '^\.githooks/' || true)
+# App tier: remove the SSA example SSN by value and re-test, so a second,
+# real-shaped SSN on the same line still blocks.
+if [[ -n "$ssn_hits" ]]; then
+  _ssn_kept=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if is_app_hit "$line"; then
+      grep -qE "$SSN_RE" <<<"${line//$TEST_SSN/}" || continue
+    fi
+    _ssn_kept+="$line"$'\n'
+  done <<<"$ssn_hits"
+  ssn_hits=$(printf '%s' "$_ssn_kept")
+fi
 if [[ -n "$ssn_hits" ]]; then
   add_block "[3 PII] SSN-shaped value(s) in committed content:
 $(sed 's/^/    /' <<<"$ssn_hits" | head -20)
@@ -279,6 +335,9 @@ if [[ -n "$cc_lines" ]]; then
       digits=$(tr -cd '0-9' <<<"$cand")
       [[ ${#digits} -ge 15 && ${#digits} -le 16 ]] || continue
       [[ "$digits" =~ ^0+$ ]] && continue          # all-zeros placeholder
+      # Documented test PAN in app code — skip this candidate only; any other
+      # Luhn-valid number on the same line is still checked.
+      is_app_hit "$line" && is_test_pan "$digits" && continue
       if luhn_ok "$digits"; then
         cc_hits+="$(cut -c1-200 <<<"$line")"$'\n'; break
       fi
@@ -729,8 +788,8 @@ fi
 #   - docs/plans/ (incl. archive/) and root chrome are exempt: they reference
 #     sibling vaults as structural templates, same carve-out as dimension 5.
 #   - docs/research/<subject>/ is exempt: that prefix is the declared convention
-#     for "this vault RESEARCHES that entity" (cortex-pe holds
-#     docs/research/hidden-harbor/ to seed its own KPI schema). It was renamed
+#     for "this vault RESEARCHES that entity" (one vault holds
+#     docs/research/<a-sibling-slug>/ to seed its own KPI schema). It was renamed
 #     out of docs/clients/ on 2026-07-28 for exactly this reason — the old name
 #     made build inputs read as misfiled client files.
 #   - cortex-portal is excluded upstream (shared infrastructure, not a tenant).
@@ -894,7 +953,8 @@ _vendor+='|Hetzner|DigitalOcean|Linode|Netlify|Railway|render\.com|Fly\.io|Cloud
 _vendor+='|\bAWS\b|\bGCP\b|\bAzure\b|Twilio|ElevenLabs|Bitwarden|Granola|Calendly'
 _vendor+='|\bVPS\b|\bhosting\b)'
 
-# Outranks the vendor carve-out: this really is a charge to a client.
+# Outranks the vendor carve-out: this really is a charge to a client. It does
+# NOT outrank the third-party carve-out below — see `_ours` for what does.
 _charge='(\bMSA\b|\bSOW\b|\bPSA\b|build phase|retainer|\binvoiced?\b'
 _charge+='|scoping brief|statement of work|build-and-handover|\bExhibit [A-Z]\b'
 _charge+='|canonical pricing'
@@ -937,6 +997,98 @@ if [[ -n "$_pricing_cands" ]]; then
   _pricing_tx=$(grep -E '^internal/transcripts/' <<<"$_pricing_hits" || true)
   _pricing_hits=$(grep -vE '^internal/transcripts/' <<<"$_pricing_hits" || true)
 
+  # Third-party figures WARN instead of BLOCK. A competitor's or a vendor's
+  # price is not Cohort L's terms, and it is exactly what competitive research
+  # and received quotes are made of. FP that proved it (2026-09-14, one vault's
+  # intake/research/): a Gemini deep-research note put a competitor's INFERRED
+  # monthly retainer beside "Engagement economics", and every push from that
+  # vault blocked. `retainer` is a `_charge` token, and `_charge` outranked the
+  # reported-speech strip and the `_vendor` list, so the only exits were an
+  # override or rewording research to dodge a regex. Editing research to satisfy
+  # a grep is the wrong remedy, so this carve-out runs BEFORE `_charge` decides.
+  #
+  # A line is third-party when any of these hold:
+  #   1. it names a party listed in the vault's config/third-parties.txt (one
+  #      name per line, `#` comments allowed) — per-vault data, the same design
+  #      as .githooks/vault-slugs.txt, never hardcoded here (this file ships in
+  #      every tenant's clone). Fail closed: a missing or unreadable list means
+  #      the name test has nothing to match, and 2 and 3 still run — never a skip;
+  #   2. it carries an explicit attribution marker (`inferred`, `estimated`,
+  #      `reportedly`, `according to`, `their pricing`, `vendor quote`, `list
+  #      price`, ...) or a citation number right after the figure or its rate
+  #      word — the Gemini output style, `...$45,000 per month18.`;
+  #   3. it sits in a file under intake/research/ whose path or first 20 lines
+  #      say competitor / vendor / market / head-to-head / alternatives.
+  #
+  # Limits, on purpose. The downgrade never applies to a CLIENT-TIER file
+  # (knowledge-base/, deliverables/, config/, or frontmatter `status: sent`):
+  # a third party's figure has no business in a client deliverable either, and
+  # a mis-attributed one there is the worst place to be lenient. And it never
+  # applies to a line that SAYS the figure is ours (`_ours` below), whatever
+  # marker sits beside it — "Cohort L's retainer is reportedly $X" is still ours.
+  # Word boundaries are load-bearing, as everywhere in this dimension: `our
+  # retainer` must not match inside "labor-h(our retainer)".
+  _ours='(\bwe charge\b|\bour (fee|rate|price|pricing|retainer)\b'
+  _ours+="|[Cc]ohort ?[Ll](['’]s)? ((own|monthly|hourly|fixed|standard) )?(fee|rate|retainer|pricing)\b"
+  _ours+='|charged? to the client)'
+  _attrib='(\binferred\b|\bestimated\b|\breportedly\b|\baccording to\b'
+  _attrib+='|\btheir (pricing|retainer|fee|fees|rate|rates|price)\b|\bvendor quote\b|\blist price\b'
+  # Citation number: the figure, then within the same sentence a word or a
+  # closing paren immediately followed by 1-3 digits and sentence punctuation,
+  # or a bracketed/caret footnote. `$45,000 per month18.` and `$3.5M18.` both
+  # match; `$20,000 and $45,000` does not (the digits after `and` are a figure,
+  # and they are preceded by `$`, not a letter).
+  _attrib+="|${_money}[^.]{0,50}([A-Za-z)][0-9]{1,3}[.,;:]([[:space:]]|$)|\[[0-9]{1,3}\]|\^[0-9]{1,3})"
+  _attrib+=')'
+  _client_tier='^(knowledge-base|deliverables|config)/'
+  _tp_file="$REPO_ROOT/config/third-parties.txt"
+  _tp_names=""
+  if [[ -r "$_tp_file" ]]; then
+    _tp_names=$(grep -vE '^[[:space:]]*(#|$)' "$_tp_file" 2>/dev/null || true)
+  fi
+
+  _pricing_tp=""; _pricing_keep=""
+  while IFS= read -r _pl; do
+    [[ -z "$_pl" ]] && continue
+    _ppath="${_pl%%:*}"
+    _keep_line=0
+    if grep -qE "$_client_tier" <<<"$_ppath"; then
+      _keep_line=1
+    elif git show "${TIP}:${_ppath}" 2>/dev/null | head -30 | grep -qE '^status:[[:space:]]*sent[[:space:]]*$'; then
+      _keep_line=1
+    elif grep -qiE "$_ours" <<<"$_pl"; then
+      _keep_line=1
+    else
+      _tp=0
+      if [[ -n "$_tp_names" ]] && grep -qiF -f <(printf '%s\n' "$_tp_names") <<<"$_pl"; then
+        _tp=1
+      elif grep -qiE "$_attrib" <<<"$_pl"; then
+        _tp=1
+      elif [[ "$_ppath" == intake/research/* ]]; then
+        if grep -qiE 'competitor|vendor|market|head-to-head|alternatives' <<<"$_ppath" \
+           || git show "${TIP}:${_ppath}" 2>/dev/null | head -20 \
+              | grep -qiE 'competitor|vendor|market|head-to-head|alternatives'; then
+          _tp=1
+        fi
+      fi
+      [[ $_tp -eq 0 ]] && _keep_line=1
+    fi
+    if [[ $_keep_line -eq 1 ]]; then
+      _pricing_keep+="${_pl}"$'\n'
+    else
+      _pricing_tp+="${_pl}"$'\n'
+    fi
+  done <<<"$_pricing_hits"
+  _pricing_hits=$(printf '%s' "$_pricing_keep" | grep -v '^[[:space:]]*$' || true)
+  _pricing_tp=$(printf '%s' "$_pricing_tp" | grep -v '^[[:space:]]*$' || true)
+
+  if [[ -n "$_pricing_tp" ]]; then
+    add_warn "[13 pricing] third-party fee figure in research — not blocking:
+$(cut -c1-160 <<<"$_pricing_tp" | sed 's/^/    /' | head -12)
+    If this is actually Cohort L's rate, move it to cohortl-finance
+    pricing/engagement-pricing.md and leave a pointer."
+  fi
+
   if [[ -n "$_pricing_tx" ]]; then
     add_warn "[13 pricing] rate-shaped figure(s) in a transcript — verbatim record, not blocking:
 $(cut -c1-160 <<<"$_pricing_tx" | sed 's/^/    /' | head -12)
@@ -954,7 +1106,9 @@ $(cut -c1-160 <<<"$_pricing_hits" | sed 's/^/    /' | head -12)
     carries a pointer, e.g. 'pricing held by David (see the PSA)'. A pointer, not a silent
     deletion — a deletion reads as 'there was never a price'.
     If this is the CLIENT's own number or a vendor cost we PAY, it is a false
-    positive: report it rather than working around it, so the pattern gets fixed."
+    positive: report it rather than working around it, so the pattern gets fixed.
+    A competitor's or vendor's figure is a false positive: mark it (e.g. 'inferred',
+    'their pricing', a citation) or list the party in config/third-parties.txt."
   fi
 fi
 
