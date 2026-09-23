@@ -858,6 +858,28 @@ else
   echo "  ✗ override did not behave (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
 
+# --- ADR-012 Amendment 9: worktrees and deletion-only pushes -----------------
+# A linked worktree can have any folder name. The vault's identity must still
+# come from the main checkout, or the gate reads the vault's own slug as foreign.
+WT="$WORK/any-other-name"
+git worktree add -q "$WT" -b amendment9-wt >/dev/null 2>&1
+out=$(cd "$WT" && CORTEX_GATE_OVERRIDE=1 CORTEX_GATE_OVERRIDE_REASON="self-test" run_hook); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "OVERRIDDEN on cortex-testco" <<<"$out"; then
+  echo "  ✓ linked worktree resolves the vault from the main checkout, not its own folder"; pass=$((pass+1))
+else
+  echo "  ✗ worktree resolved the wrong vault name (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+git worktree remove --force "$WT" >/dev/null 2>&1
+
+# A push that only deletes a remote ref sends no content, so there is nothing
+# to scan. It used to fall back to HEAD and scan all history.
+out=$(printf '(delete) %s refs/heads/old-branch %s\n' "$ZERO40" "$(git rev-parse HEAD)" | bash "$HOOK" 2>&1); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "deletion-only push" <<<"$out"; then
+  echo "  ✓ deletion-only push passes without scanning"; pass=$((pass+1))
+else
+  echo "  ✗ deletion-only push did not pass cleanly (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
 echo
 echo "self-test: $pass passed, $fail failed"
 [[ $fail -eq 0 ]] || exit 1
