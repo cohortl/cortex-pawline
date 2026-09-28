@@ -159,6 +159,19 @@ WARNS=""    ; nwarn=0
 add_block() { BLOCKS+="$1"$'\n' ; nblock=$((nblock+1)); }
 add_warn()  { WARNS+="$1"$'\n'  ; nwarn=$((nwarn+1)); }
 
+# Print the first N lines of a finding list from stdin, then say how many were
+# left out. A bare `head -N` dropped the rest silently, so a push with many
+# findings looked like it had only N, and fixing those N led to a second block.
+cap() {
+  local n="$1" all total
+  all=$(cat)
+  total=$(grep -c '' <<<"$all")
+  head -n "$n" <<<"$all"
+  if (( total > n )); then
+    echo "    ... and $((total - n)) more line(s) not shown (full list: /repo-audit, or grep the tree)"
+  fi
+}
+
 # Luhn check on a digit string (returns 0 = valid card checksum).
 luhn_ok() {
   awk -v s="$1" 'BEGIN{
@@ -262,7 +275,7 @@ if command -v gitleaks >/dev/null 2>&1; then
     gl_out=$(gitleaks "${gl_args[@]}" --log-opts="$range" 2>&1)
     if [[ $? -ne 0 ]]; then
       add_block "[2 secrets] gitleaks found credential(s) in $range (values redacted):
-$(grep -E 'Finding|File|Line|Secret|RuleID' <<<"$gl_out" | sed 's/^/    /' | head -40)
+$(grep -E 'Finding|File|Line|Secret|RuleID' <<<"$gl_out" | sed 's/^/    /' | cap 40)
     Remedy: remove the secret, rotate it, rewrite history if already committed."
     fi
   done
@@ -302,7 +315,7 @@ else
   fi
   if [[ -n "$sec_hits" ]]; then
     add_block "[2 secrets] high-confidence credential pattern(s) in committed content:
-$(sed 's/^/    /' <<<"$sec_hits" | head -40)
+$(sed 's/^/    /' <<<"$sec_hits" | cap 40)
     Remedy: remove + rotate the secret; move real creds to raw/ (local-only)."
   fi
 fi
@@ -313,7 +326,7 @@ jwt_url_hits=$(tree_grep '[?&]token=eyJ[A-Za-z0-9_.-]{20,}' || true)
 if [[ -n "$jwt_url_hits" ]]; then
   add_warn "[2 secrets] signed share-URL token(s) in committed content (expected in
     shared_url/share indexes; confirm none is a real session/API JWT):
-$(sed 's/^/    /' <<<"$jwt_url_hits" | sed -E 's/(token=eyJ[A-Za-z0-9_.-]{12}).*/\1…[redacted]/' | head -12)"
+$(sed 's/^/    /' <<<"$jwt_url_hits" | sed -E 's/(token=eyJ[A-Za-z0-9_.-]{12}).*/\1…[redacted]/' | cap 12)"
 fi
 
 # ===========================================================================
@@ -338,7 +351,7 @@ if [[ -n "$ssn_hits" ]]; then
 fi
 if [[ -n "$ssn_hits" ]]; then
   add_block "[3 PII] SSN-shaped value(s) in committed content:
-$(sed 's/^/    /' <<<"$ssn_hits" | head -20)
+$(sed 's/^/    /' <<<"$ssn_hits" | cap 20)
     Remedy: redact; PII belongs in raw/ (local-only), never committed."
 fi
 
@@ -368,7 +381,7 @@ if [[ -n "$cc_lines" ]]; then
   done <<< "$cc_lines"
   if [[ -n "$cc_hits" ]]; then
     add_block "[3 PII] Luhn-valid credit-card number(s) in committed content:
-$(sed 's/^/    /' <<<"$cc_hits" | sort -u | head -20)
+$(sed 's/^/    /' <<<"$cc_hits" | sort -u | cap 20)
     Remedy: redact immediately; card data must never be committed."
   fi
 fi
@@ -418,7 +431,7 @@ if [[ "$phi_armed" == "1" ]]; then
   phi_hits=$(tree_grep_i '(MRN|medical record number|ICD-?10 code|diagnosis code|patient (id|name|dob)|date of birth)' -- "${CLIENT_DIRS[@]}" || true)
   if [[ -n "$phi_hits" ]]; then
     add_warn "[4 PHI] possible patient identifiers in the client surface:
-$(sed 's/^/    /' <<<"$phi_hits" | head -20)
+$(sed 's/^/    /' <<<"$phi_hits" | cap 20)
     Run /repo-audit for a dedicated PHI pass; move identifiers to raw/ if real."
   fi
 fi
@@ -531,7 +544,7 @@ if [[ -n "$REGISTRY" ]]; then
     hits=$(git grep -I -n -i -F "${grep_args[@]}" "$TIP" -- "${CLIENT_DIRS[@]}" config 2>/dev/null | sed "s/^${TIP}://" | cut -c1-200 || true)
     if [[ -n "$hits" ]]; then
       add_block "[5 cross-tenant] another engagement's identifier appears in this vault's client-facing content:
-$(sed 's/^/    /' <<<"$hits" | head -15)
+$(sed 's/^/    /' <<<"$hits" | cap 15)
     Remedy: this is $BASE — remove references to other clients' names/systems
     from knowledge-base/ + config/ (transcripts/build-plans in internal/ are the
     /repo-audit skill's call; structural refs in docs/plans/ are fine)."
@@ -572,7 +585,7 @@ elif [[ -f "$SLUGS_FILE" ]]; then
     hits=$(git grep -I -n -i -F "${grep_args[@]}" "$TIP" -- "${CLIENT_DIRS[@]}" config 2>/dev/null | sed "s/^${TIP}://" | cut -c1-200 || true)
     if [[ -n "$hits" ]]; then
       add_block "[5 cross-tenant] another engagement's vault slug appears in this vault's client-facing content:
-$(sed 's/^/    /' <<<"$hits" | head -15)
+$(sed 's/^/    /' <<<"$hits" | cap 15)
     Remedy: this is $BASE — remove references to other clients' systems from
     knowledge-base/ + config/."
     fi
@@ -625,7 +638,7 @@ fi
 trans_hits=$(tree_grep '!?\[\[(internal|raw)/|\]\(\.\.?/*(internal|raw)/' -- "${CLIENT_DIRS[@]}" || true)
 if [[ -n "$trans_hits" ]]; then
   add_block "[6 transclusion] a client-facing note embeds/links a non-client tier:
-$(sed 's/^/    /' <<<"$trans_hits" | head -20)
+$(sed 's/^/    /' <<<"$trans_hits" | cap 20)
     Remedy: client-facing notes must not reference internal/ or raw/ — inline the
     needed content or drop the link."
 fi
@@ -638,7 +651,7 @@ CFG_SECRET_RE='(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|sk-ant-[A-Za-z0-9-]{20,}|
 cfg_hits=$(tree_grep_i "$CFG_SECRET_RE" -- 'config/systems.yaml' 'config/connectors.md' 'config/org-map.md' || true)
 if [[ -n "$cfg_hits" ]]; then
   add_block "[8 config] raw credential/token in a client-visible config file:
-$(sed 's/^/    /' <<<"$cfg_hits" | head -20)
+$(sed 's/^/    /' <<<"$cfg_hits" | cap 20)
     Remedy: replace the value with a placeholder/ref; real creds live in raw/ or a
     secret manager, never in the published config subset."
 fi
@@ -649,7 +662,7 @@ fi
 marker_hits=$(tree_grep 'CONFIDENTIAL|DO NOT SHARE|INTERNAL ONLY|status:[[:space:]]*(internal|private)' -- "${CLIENT_DIRS[@]}" || true)
 if [[ -n "$marker_hits" ]]; then
   add_block "[9 markers] explicit confidential marker in the client-facing surface:
-$(sed 's/^/    /' <<<"$marker_hits" | head -20)
+$(sed 's/^/    /' <<<"$marker_hits" | cap 20)
     Remedy: this content is client-visible — move it to internal/ or remove the marker."
 fi
 # `status: draft` is a legitimate lifecycle state for concepts/playbooks/policies
@@ -689,7 +702,7 @@ fi
 draft_hits=$(sed '/^$/d' <<<"$draft_hits")
 if [[ -n "$draft_hits" ]]; then
   add_warn "[9 markers] draft-status doc(s) addressed to a recipient:
-$(sed 's/^/    /' <<<"$draft_hits" | head -12)
+$(sed 's/^/    /' <<<"$draft_hits" | cap 12)
     Confirm these are ready to send, or hold in internal/ until shared."
 fi
 
@@ -702,7 +715,7 @@ $(sed 's/^/    /' <<<"$ds_tracked")
     Remedy: git rm --cached; add .DS_Store to .gitignore."
 bin_kb=$(tracked -- "${CLIENT_DIRS[@]}" | grep -iE '\.(docx|pdf|jpg|jpeg|png|tiff)$' || true)
 [[ -n "$bin_kb" ]] && add_warn "[10 metadata] client-facing binary/image files may carry EXIF/author metadata:
-$(sed 's/^/    /' <<<"$bin_kb" | head -12)
+$(sed 's/^/    /' <<<"$bin_kb" | cap 12)
     Run /repo-audit to scrub, or check with exiftool before sharing."
 
 # ===========================================================================
@@ -772,7 +785,7 @@ while IFS= read -r f; do
 done < <({ tracked -- 'internal/transcripts' 'internal/meetings' 2>/dev/null; tracked 2>/dev/null | grep -iE 'transcript'; } | sort -u)
 if [[ -n "$sidetalk" ]]; then
   add_warn "[11 side-talk] transcript(s) open with a Cohort L only stretch — check for pre-call chatter:
-$(printf '%s' "$sidetalk" | sort -u | head -12)
+$(printf '%s' "$sidetalk" | sort -u | cap 12)
     Recorders run before the client joins. Cut the opening stretch (and any tail
     after they drop) before pushing. Check the derived meeting note too — the
     summary usually carries the same content. Do not leave a note saying what was
@@ -780,7 +793,7 @@ $(printf '%s' "$sidetalk" | sort -u | head -12)
 fi
 if [[ -n "$unlabelled" ]]; then
   add_warn "[11 side-talk] transcript(s) with no usable speaker labels — cannot be checked automatically:
-$(printf '%s' "$unlabelled" | sort -u | head -8)
+$(printf '%s' "$unlabelled" | sort -u | cap 8)
     Absence of a warning here is not evidence these are clean. Skim the first and
     last page by hand."
 fi
@@ -847,7 +860,7 @@ if [[ "$registry_loaded" -eq 1 && ${#other_vaults[@]} -gt 0 ]]; then
       | grep -iE "$path_pat" || true)
     if [[ -n "$path_hits" ]]; then
       add_block "[12 cross-tenant path] file(s) in this vault are NAMED for another engagement:
-$(sed 's/^/    /' <<<"$path_hits" | head -15)
+$(sed 's/^/    /' <<<"$path_hits" | cap 15)
     This is $BASE. A document filed under another tenant's slug is misfiled, not
     merely a mention — a real cross-tenant misfiling case (2026-04, found 2026-07)
     looked exactly like this. Remedy: git mv it into the correct cortex-{slug} vault,
@@ -865,7 +878,7 @@ $(sed 's/^/    /' <<<"$path_hits" | head -15)
         | sed "s/^${TIP}://" | cut -c1-160 || true)
       if [[ -n "$body_hits" ]]; then
         add_warn "[12 cross-tenant] another engagement is named in this vault's team-tier content:
-$(sed 's/^/    /' <<<"$body_hits" | head -10)
+$(sed 's/^/    /' <<<"$body_hits" | cap 10)
     Team-tier never reaches the client, so this does not block. Confirm it is a
     verbatim record or a deliberate comparison — not content that belongs in the
     other vault. /repo-audit does the judgment pass."
@@ -974,7 +987,34 @@ _vendor+='|\bcards?\b|billed to|\bbilling\b|who pays|payment method|on our card'
 # safe in both directions: ours is not a price, and a client's is their number.
 _vendor+='|Hetzner|DigitalOcean|Linode|Netlify|Railway|render\.com|Fly\.io|Cloudflare'
 _vendor+='|\bAWS\b|\bGCP\b|\bAzure\b|Twilio|ElevenLabs|Bitwarden|Granola|Calendly'
-_vendor+='|\bVPS\b|\bhosting\b)'
+_vendor+='|\bVPS\b|\bhosting\b'
+# A lender's own business. FP that proved it (2026-09-19, one private repo's copy
+# of this dimension): "About $100M a month, about 300 loans from about 500
+# applications" is a mortgage client's loan volume. Lending-product vocabulary
+# only: bare "loan" stays OUT, because a per-loan fee is a price we would charge.
+_vendor+='|loan volume|\bvolume:|\bloans from\b|\bbrokers?\b|\bHELOC\b|\bCLTV\b|\bFICO\b'
+_vendor+='|\bborrowers?\b|originat(ed|ions?)\b|\bunderwritten\b)'
+
+# A product term is not an engagement length. `[0-9]+[- ]month` is in `_rate`
+# to catch "$NNNK for a 7-month build", but the same shape names the length of a
+# CLIENT's product: "12 and 24 month bank statement options" beside a
+# competitor's loan size, or "a 36-month warranty" beside a unit price. Each
+# blocked a push in a lending or warranty vault. These phrases are removed from
+# a lowercased copy of the line before `_tight` is tested again; if no rate
+# shape survives, the line was never a rate. "7-month build" / "7-month
+# engagement" are not in this list and still count.
+# Deliberately NOT here: term, installments, financing, payment plan, payback.
+# "$NNNK in 12-month installments per the SOW" is our price, and stripping its
+# only rate shape would let it through.
+# Also NOT here in bare form: statement, history, loan, lease. "12-month statement
+# of work", "12-month history backfill", "24-month loan history dashboards" and
+# "12-month lease accounting build" are how we write our own deals, so each needs
+# its product qualifier.
+_product_term='[0-9]+[- ]months?[ -](bank statements?|look-?backs?'
+_product_term+='|warrant(y|ies)|guarantees?|loan (terms?|programs?|products?)'
+_product_term+='|lease (terms?|programs?|products?|payments?|options?|agreements?'
+_product_term+='|contracts?)'
+_product_term+='|amortization|(credit|payment) histor(y|ies))'
 
 # Outranks the vendor carve-out: this really is a charge to a client. It does
 # NOT outrank the third-party carve-out below — see `_ours` for what does.
@@ -992,6 +1032,16 @@ _charge+='|\bwe charge\b|\bour (fee|rate|price|pricing)\b|charged? to the client
 _pricing_cands=$(tree_grep "$_tight" -- '*.md' 2>/dev/null \
   | grep -vE '^(\.githooks/|\.gitleaks\.toml)' \
   | grep -iE "$_commercial" || true)
+
+if [[ -n "$_pricing_cands" ]]; then
+  _cands_kept=""
+  while IFS= read -r _pl; do
+    [[ -z "$_pl" ]] && continue
+    _stripped=$(tr '[:upper:]' '[:lower:]' <<<"$_pl" | sed -E "s/${_product_term}//g")
+    grep -qiE "$_tight" <<<"$_stripped" && _cands_kept+="${_pl}"$'\n'
+  done <<<"$_pricing_cands"
+  _pricing_cands=$(printf '%s' "$_cands_kept" | grep -v '^[[:space:]]*$' || true)
+fi
 
 if [[ -n "$_pricing_cands" ]]; then
   _keep=$(grep -iE "$_charge" <<<"$_pricing_cands" || true)
@@ -1107,14 +1157,14 @@ if [[ -n "$_pricing_cands" ]]; then
 
   if [[ -n "$_pricing_tp" ]]; then
     add_warn "[13 pricing] third-party fee figure in research — not blocking:
-$(cut -c1-160 <<<"$_pricing_tp" | sed 's/^/    /' | head -12)
+$(cut -c1-160 <<<"$_pricing_tp" | sed 's/^/    /' | cap 12)
     If this is actually Cohort L's rate, move it to cohortl-finance
     pricing/engagement-pricing.md and leave a pointer."
   fi
 
   if [[ -n "$_pricing_tx" ]]; then
     add_warn "[13 pricing] rate-shaped figure(s) in a transcript — verbatim record, not blocking:
-$(cut -c1-160 <<<"$_pricing_tx" | sed 's/^/    /' | head -12)
+$(cut -c1-160 <<<"$_pricing_tx" | sed 's/^/    /' | cap 12)
     Skim each: if it is Cohort L's own terms, the transcript stays verbatim but
     the deal figure needs its pointer in cohortl-finance
     pricing/engagement-pricing.md; if it is the client's own number (their
@@ -1123,7 +1173,7 @@ $(cut -c1-160 <<<"$_pricing_tx" | sed 's/^/    /' | head -12)
 
   if [[ -n "$_pricing_hits" ]]; then
     add_block "[13 pricing] Cohort L's own commercial terms are in a tracked file:
-$(cut -c1-160 <<<"$_pricing_hits" | sed 's/^/    /' | head -12)
+$(cut -c1-160 <<<"$_pricing_hits" | sed 's/^/    /' | cap 12)
     What Cohort L charges belongs with David, not in a delivery repo. Canonical
     home is cohortl-finance pricing/engagement-pricing.md; everywhere else
     carries a pointer, e.g. 'pricing held by David (see the PSA)'. A pointer, not a silent

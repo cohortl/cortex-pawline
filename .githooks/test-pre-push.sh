@@ -661,6 +661,67 @@ else
   echo "  ✗ dim13 false-blocked employment compensation (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
 fi
 
+# --- Dimension 13 control: an N-month PRODUCT term is not an engagement length --
+# `[0-9]+[- ]month` catches "$NNNK for a 7-month build", but the same shape names
+# the length of a client's product. Lending and warranty vaults blocked on it.
+# No lending vocabulary on these lines, so the `_vendor` carve-out cannot be what
+# lets them through: only the product-term strip can.
+reset_clean
+mkdir -p knowledge-base
+cat > knowledge-base/products.md <<'EOF'
+# Products
+- Their standard unit ships at $4,200 with a 36-month warranty; the proposal keeps that.
+- Applicants choose 12 or 24 month bank statement programs up to $500K, per the engagement notes.
+- Tenants sign a 24-month lease agreement from $3,500, per the engagement notes.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "legit: client product terms" >/dev/null 2>&1
+term_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
+out=$(run_hook "$term_base"); rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "  ✓ dim13 ignores an N-month warranty / bank-statement product term"; pass=$((pass+1))
+else
+  echo "  ✗ dim13 false-blocked an N-month product term (rc=$rc):"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+
+# The strip removes only the product phrase. Our own duration on the same line
+# is still a rate shape and still blocks.
+reset_clean
+mkdir -p internal
+cat > internal/offer.md <<'EOF'
+# Offer
+$240K for a 7-month build per the proposal, and the client keeps its 12-month warranty.
+EOF
+git add -A >/dev/null 2>&1; git commit -qm "poison: our price beside a product term" >/dev/null 2>&1
+expect_block "dim13 our price still blocks beside a product term" "pricing" "$BASE"
+
+# Bare "statement", "history", "loan" and "lease" are also deal wording. Each of these
+# blocked before the strip existed and must still block with it (PR 64 review).
+i=0
+while IFS= read -r _line; do
+  i=$((i+1))
+  reset_clean
+  mkdir -p internal
+  printf '# Deal\n%s\n' "$_line" > internal/deal.md
+  git add -A >/dev/null 2>&1; git commit -qm "poison: deal wording $i" >/dev/null 2>&1
+  expect_block "dim13 our price blocks: deal wording case $i" "pricing" "$BASE"
+done <<'EOF'
+$240K for the 12-month statement of work, signed with the client.
+$90K per the SOW to rebuild their 24-month loan history dashboards.
+Our SOW: $240K, 12-month history backfill included.
+$60K per the SOW for 12-month lease accounting build.
+EOF
+
+# --- Finding lists say how much they left out ---------------------------------
+# Lists are capped so the report stays readable. The cap used to drop the rest
+# silently: 14 findings read as 12, and fixing those 12 led to a second block.
+reset_clean
+mkdir -p internal
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+  echo "Option $i: 7-month engagement, \$${i}7K/mo per the SOW."
+done > internal/options.md
+git add -A >/dev/null 2>&1; git commit -qm "poison: fourteen rate lines" >/dev/null 2>&1
+expect_block "a capped finding list reports the lines it left out" "2 more line(s) not shown" "$BASE"
+
 # --- Dimension 13: a transcript WARNS instead of blocking ---------------------
 # The regression this pins (2026-08-10, client-a): a client-side speaker saying
 # "what our price floors are" about the CLIENT's own minimum price blocked the
