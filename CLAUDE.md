@@ -4,7 +4,7 @@
 >
 > - **`knowledge-base/`**: ALL-STAFF visible. The default Cortex KMS surface for everyone at Pawline Veterinary Partners. Served by the portal.
 > - **`internal/`**: EXEC/BOARD-ONLY. Committed and shared with named exec/board principals via GitHub org access (active M&A pipeline, compensation, vendor negotiations, exec performance, strategic pricing). **Never** served on the default portal route (the portal prunes it from the vendored copy at build time). Never visible below Director level except by named grant.
-> - **`raw/`**: LOCAL-ONLY. Gitignored. Recordings, PII, credentials, bulk source dumps. Never leaves this machine.
+> - **`raw/`**: LOCAL-ONLY. Gitignored. Recordings, PII, bulk source dumps. Never leaves this machine. Credentials are not stored here: they live in Bitwarden, and `raw/secrets/` holds only a `bws-env pull` working copy.
 >
 > This is the same shape an Abeto-engagement repo uses for "client-visible vs team-internal." Here it is reframed as "all-staff vs exec-only," the pattern most company KMSes need.
 >
@@ -16,7 +16,8 @@
 > | Text transcript | `internal/transcripts/` | exec |
 > | Polished meeting note / deliverable | `knowledge-base/meetings/` (or the right `knowledge-base/` subfolder) | all-staff |
 > | Exec/board material (M&A, comp, vendor negotiations, pricing) | `internal/` | exec |
-> | Raw source dumps, exports, PII, credentials | `raw/` | local-only |
+> | Raw source dumps, exports, PII | `raw/` | local-only |
+> | Credentials, API keys, tokens | Bitwarden (`raw/secrets/` holds only a `bws-env pull` copy) | never in the repo |
 >
 > Nothing under `knowledge-base/` should contain unredacted comp data, named M&A targets, or active-negotiation positions. `internal/` and `raw/` are never exposed in the portal default render.
 
@@ -60,7 +61,7 @@ This repo also operates as an **Obsidian vault**. Open the repo root in Obsidian
 5. **`config/`**: system inventory, org-map, connectors, guardrails
 6. **`docs/decisions/`**: vault-shape ADRs (the boundary contract itself)
 7. **`docs/plans/`**: implementation plans for Cortex deployment
-8. **`raw/`**: local-only (gitignored): recordings, PII, credentials, bulk source dumps
+8. **`raw/`**: local-only (gitignored): recordings, PII, bulk source dumps (credentials live in Bitwarden; `raw/secrets/` holds only a pulled copy)
 
 ## What you can change without involving the CIO/CMO
 

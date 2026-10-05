@@ -15,7 +15,8 @@
 ## What does NOT go here → use `raw/` (local-only, gitignored)
 
 - Audio/video **recordings** (`.mp3`, `.mp4`, `.wav`, `.m4a`) — always `raw/`, never committed
-- Real PII, credentials, unredacted call/data exports
+- Real PII, unredacted call/data exports
+- Credentials never go here or in `raw/`: they live in Bitwarden (`raw/secrets/` holds only a `bws-env pull` working copy)
 - Bulk source-data dumps, contracts, binary source files
 
 **The rule:** recordings and PII → `raw/`. Team prose and text transcripts →
