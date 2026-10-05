@@ -316,7 +316,8 @@ else
   if [[ -n "$sec_hits" ]]; then
     add_block "[2 secrets] high-confidence credential pattern(s) in committed content:
 $(sed 's/^/    /' <<<"$sec_hits" | cap 40)
-    Remedy: remove + rotate the secret; move real creds to raw/ (local-only)."
+    Remedy: remove + rotate the secret; store it in Bitwarden (Secrets Manager via
+    bws-env). raw/secrets/ holds only a bws-env pull working copy."
   fi
 fi
 
@@ -652,8 +653,8 @@ cfg_hits=$(tree_grep_i "$CFG_SECRET_RE" -- 'config/systems.yaml' 'config/connect
 if [[ -n "$cfg_hits" ]]; then
   add_block "[8 config] raw credential/token in a client-visible config file:
 $(sed 's/^/    /' <<<"$cfg_hits" | cap 20)
-    Remedy: replace the value with a placeholder/ref; real creds live in raw/ or a
-    secret manager, never in the published config subset."
+    Remedy: replace the value with a placeholder/ref; real creds live in Bitwarden
+    (Secrets Manager via bws-env), never in the published config subset."
 fi
 
 # ===========================================================================
