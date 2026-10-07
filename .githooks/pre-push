@@ -441,44 +441,85 @@ fi
 # Client registry resolution — the input to dimensions 5 AND 12
 #
 # Ordered candidate list, first EXISTING file wins:
-#   1. $CORTEX_CLIENT_REGISTRY                              explicit override
-#   2. $HOME/cohortl/mini-cohortl/engagements/_registry.md   current location
-#   3. $HOME/cohortl/cohortl-admin/engagements/_registry.md  legacy — keep forever
+#   1. $CORTEX_CLIENT_REGISTRY                                  explicit override
+#   2. <checkout>/../cohortl-ops/registry/_registry.md           current — sibling clone
+#   3. $HOME/cohortl/cohortl-ops/registry/_registry.md           current — default layout
+#   4. $HOME/cohortl/mini-cohortl/engagements/_registry.md       legacy (pre-2026-10-05)
+#   5. $HOME/cohortl/cohortl-admin/engagements/_registry.md      legacy — keep forever
 #
-# This function is the ONLY place any of those paths is written down. Candidate 3
-# is retained permanently and deliberately: it costs one `[[ -f ]]` test and it
-# means a vault whose hook was never re-installed keeps resolving the registry
-# before, during and after the folder rename. No window exists in which some
-# vaults are blind, which is what makes propagating this hook non-atomic and
-# therefore safe.
+# This function is the ONLY place any of those paths is written down.
 #
-# The GitHub repo behind candidate 2 is `greenbits-dev/mini-cohortl` (renamed from
-# `cohortl-private` 2026-07-30; deliberately a solo repo on a personal account, not
-# company-org infrastructure). Folder and repo now match, but nothing here depends
-# on that — resolution is by candidate list, not by name.
+# The registry moved to the shared private org repo `cohortl/cohortl-ops` on
+# 2026-10-05, so every teammate with org access can resolve it. Candidate 2 finds
+# it next to this vault's checkout, whatever folder the clones live in
+# (`~/cohortl/`, `~/projects/cohortl/`, ...). It is tried relative to this
+# checkout and, in a linked worktree, relative to the MAIN checkout too, because
+# a worktree can sit anywhere. Candidate 3 covers a vault cloned somewhere other
+# than beside cohortl-ops (e.g. `~/cortex/`) on a machine using the default layout.
+#
+# Candidates 4 and 5 are retained permanently and deliberately: they cost one
+# `[[ -f ]]` test each and they mean a machine that has not moved the file yet
+# keeps resolving the registry before, during and after the move. No window
+# exists in which some vaults are blind, which is what makes propagating this
+# hook non-atomic and therefore safe. Candidate 4 is the personal repo the
+# registry lived in from 2026-06-10 to 2026-10-05; candidate 5 is its pre-rename
+# folder. Resolution is by candidate list, not by repo name.
 #
 # Absence is FATAL, not a warning — see the else branch below.
 # ===========================================================================
-# Sets two globals: REGISTRY (the winner, "" if none) and REGISTRY_CANDIDATES
-# (everything tried, for the error message). Deliberately NOT a command
-# substitution — a subshell would drop the candidate list the message needs.
+# A default candidate counts only when it holds at least one vault row (a table
+# row whose Vault cell is `cortex-<slug>`). First-existing-wins with no content
+# check meant a stub or header-only file at a high-priority path parsed to zero
+# needles and reported dims 5 and 12 clean, shadowing the real registry and the
+# slug list behind it. Candidate 2 sits in a team-writable repo, so that is a
+# reachable state, not a hypothetical. A stub is skipped (and reported) and the
+# next candidate is tried. $CORTEX_CLIENT_REGISTRY is exempt: it is an explicit
+# choice and may point at a narrower purpose-built file.
+registry_has_rows() {
+  awk -F'|' '/^\|/ { v = $4; gsub(/^[ \t`]+|[ \t`]+$/, "", v); if (v ~ /^cortex-/) { f = 1; exit } }
+             END { exit !f }' "$1" 2>/dev/null
+}
+
+# Sets three globals: REGISTRY (the winner, "" if none), REGISTRY_CANDIDATES
+# (everything tried, for the error message) and REGISTRY_SKIPPED (candidates
+# that exist but hold no vault rows). Deliberately NOT a command substitution —
+# a subshell would drop the lists the messages need.
 REGISTRY=""
 REGISTRY_CANDIDATES=()
+REGISTRY_SKIPPED=()
 resolve_registry() {
   REGISTRY=""
   REGISTRY_CANDIDATES=()
+  REGISTRY_SKIPPED=()
   [[ -n "${CORTEX_CLIENT_REGISTRY:-}" ]] && REGISTRY_CANDIDATES+=("$CORTEX_CLIENT_REGISTRY")
+  REGISTRY_CANDIDATES+=("$(dirname "$REPO_ROOT")/cohortl-ops/registry/_registry.md")
+  if [[ -n "$COMMON_DIR" && "$(basename "$COMMON_DIR")" == ".git" ]]; then
+    local main_parent; main_parent=$(dirname "$(dirname "$COMMON_DIR")")
+    local main_sibling="$main_parent/cohortl-ops/registry/_registry.md"
+    [[ "$main_sibling" != "${REGISTRY_CANDIDATES[${#REGISTRY_CANDIDATES[@]}-1]}" ]] \
+      && REGISTRY_CANDIDATES+=("$main_sibling")
+  fi
   REGISTRY_CANDIDATES+=(
+    "$HOME/cohortl/cohortl-ops/registry/_registry.md"
     "$HOME/cohortl/mini-cohortl/engagements/_registry.md"
     "$HOME/cohortl/cohortl-admin/engagements/_registry.md"
   )
   local c
   for c in "${REGISTRY_CANDIDATES[@]}"; do
-    if [[ -f "$c" ]]; then REGISTRY="$c"; return 0; fi
+    [[ -f "$c" ]] || continue
+    if [[ "$c" == "${CORTEX_CLIENT_REGISTRY:-}" ]] || registry_has_rows "$c"; then
+      REGISTRY="$c"; return 0
+    fi
+    REGISTRY_SKIPPED+=("$c")
   done
   return 1
 }
 resolve_registry || true
+if [[ ${#REGISTRY_SKIPPED[@]} -gt 0 ]]; then
+  add_warn "[5+12 registry] skipped a client registry with no vault rows (a stub or header-only file):
+$(printf '    %s\n' "${REGISTRY_SKIPPED[@]}")
+    ${REGISTRY:+Used $REGISTRY instead. }Fill it from the real registry or delete it."
+fi
 
 # ===========================================================================
 # Dimension 5 — Cross-tenant contamination (BLOCK on other clients' names/slugs)
@@ -557,7 +598,8 @@ elif [[ -f "$SLUGS_FILE" ]]; then
   #   slugs  — GitHub repo names in the cohortl org. Anyone on the `cortex` team
   #            can list them with `gh`. Not secret.
   #   names  — the real Client <-> anon mapping. Genuinely sensitive; lives in
-  #            mini-cohortl, a solo repo, and is not shareable.
+  #            the private org repo cohortl-ops (mini-cohortl, a solo repo, until
+  #            2026-10-05), so a clone without that repo beside it has no names.
   #
   # Treating those as one all-or-nothing input is what blocked a teammate on
   # 2026-07-30 with no way to satisfy the gate — and revealed that dims 5 and 12

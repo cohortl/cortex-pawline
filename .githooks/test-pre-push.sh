@@ -50,14 +50,23 @@ export CORTEX_CLIENT_REGISTRY="$REG"
 # circuits candidate 1, so it never exercises the default candidate paths that
 # every real vault actually uses. Planting the same registry under a fake HOME
 # does, one candidate at a time.
-HOME_NEW="$WORK/home-new"          # candidate 2 — post-rename location
-HOME_LEGACY="$WORK/home-legacy"    # candidate 3 — legacy location, kept forever
+HOME_OPS="$WORK/home-ops"          # candidate 3 — ~/cohortl/cohortl-ops (current home)
+HOME_NEW="$WORK/home-new"          # candidate 4 — mini-cohortl, legacy since 2026-10-05
+HOME_LEGACY="$WORK/home-legacy"    # candidate 5 — cohortl-admin, legacy, kept forever
 HOME_NONE="$WORK/home-none"        # no registry anywhere → must fail closed
-mkdir -p "$HOME_NEW/cohortl/mini-cohortl/engagements" \
+mkdir -p "$HOME_OPS/cohortl/cohortl-ops/registry" \
+         "$HOME_NEW/cohortl/mini-cohortl/engagements" \
          "$HOME_LEGACY/cohortl/cohortl-admin/engagements" \
          "$HOME_NONE"
+cp "$REG" "$HOME_OPS/cohortl/cohortl-ops/registry/_registry.md"
 cp "$REG" "$HOME_NEW/cohortl/mini-cohortl/engagements/_registry.md"
 cp "$REG" "$HOME_LEGACY/cohortl/cohortl-admin/engagements/_registry.md"
+# Candidate 2 — a cohortl-ops clone BESIDE the vault checkout. Planted only for
+# the cases that need it (plant_sibling / unplant_sibling): while it exists every
+# HOME resolves the registry, which would mask the fail-closed cases.
+SIBLING_OPS="$WORK/cohortl-ops/registry"
+plant_sibling()   { mkdir -p "$SIBLING_OPS" && cp "$REG" "$SIBLING_OPS/_registry.md"; }
+unplant_sibling() { rm -rf "$WORK/cohortl-ops"; }
 
 ZERO40="0000000000000000000000000000000000000000"
 
@@ -786,7 +795,7 @@ fi
 # reinstate the pass-expecting version.
 #
 # These cases move HOME rather than setting CORTEX_CLIENT_REGISTRY to a bogus
-# path. The env var is only candidate 1 of 3 — pointing it at a missing file
+# path. The env var is only candidate 1 of several — pointing it at a missing file
 # falls through to the real registry on a developer machine, so it cannot test
 # absence at all (the pre-2026-07-30 case had exactly that blind spot).
 reset_clean
@@ -795,8 +804,59 @@ reg_base=$(git rev-parse HEAD~1 2>/dev/null || echo "$ZERO40")
 expect_home "registry resolves at the legacy candidate path (pass)" \
   0 "$HOME_LEGACY" "$reg_base" "cortex gate: clean"
 
-expect_home "registry resolves at the post-rename candidate path (pass)" \
+expect_home "registry falls back to the legacy mini-cohortl path (pass)" \
   0 "$HOME_NEW" "$reg_base" "cortex gate: clean"
+
+expect_home "registry resolves at ~/cohortl/cohortl-ops (pass)" \
+  0 "$HOME_OPS" "$reg_base" "cortex gate: clean"
+
+# Candidate 2: a cohortl-ops clone beside the vault, with NOTHING under HOME. This
+# is the ~/projects/cohortl/ layout, where every HOME-based candidate misses.
+plant_sibling
+expect_home "registry resolves from a sibling cohortl-ops clone (pass)" \
+  0 "$HOME_NONE" "$reg_base" "cortex gate: clean"
+# A linked worktree can sit anywhere, so "beside this checkout" may be the wrong
+# folder. The hook also tries beside the MAIN checkout; a worktree far from both
+# must still resolve.
+WT_FAR="$WORK/elsewhere/vault-wt"
+git worktree add -q "$WT_FAR" -b registry-sibling-wt >/dev/null 2>&1
+out=$(cd "$WT_FAR" && run_hook_home "$HOME_NONE" "$reg_base"); rc=$?
+if [[ $rc -eq 0 ]] && grep -q "cortex gate: clean" <<<"$out"; then
+  echo "  ✓ a linked worktree finds cohortl-ops beside the main checkout"; pass=$((pass+1))
+else
+  echo "  ✗ linked worktree did not find the main checkout's sibling cohortl-ops (rc=$rc):"
+  echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+fi
+git worktree remove --force "$WT_FAR" >/dev/null 2>&1
+git branch -D registry-sibling-wt >/dev/null 2>&1
+
+# Order: the sibling wins over the legacy mini-cohortl copy. The legacy copy
+# here lacks the rival's row, so only the sibling registry knows that name: a
+# block proves the sibling won, a pass would mean the legacy copy did.
+HOME_STALE="$WORK/home-stale"
+mkdir -p "$HOME_STALE/cohortl/mini-cohortl/engagements"
+grep -v "Rival Holdings" "$REG" > "$HOME_STALE/cohortl/mini-cohortl/engagements/_registry.md"
+echo "compare with Rival Holdings Group's rollout" > knowledge-base/notes.md
+git add -A >/dev/null 2>&1; git commit -qm "foreign NAME known only to the sibling registry" >/dev/null 2>&1
+expect_home "a sibling cohortl-ops registry wins over the legacy mini-cohortl one" \
+  1 "$HOME_STALE" "$BASE" "5 cross-tenant"
+reset_clean
+unplant_sibling
+
+# A stub at a high-priority candidate must not shadow the real registry. Before
+# the row check, a header-only sibling resolved first, parsed to zero needles and
+# reported dims 5 and 12 clean. Now it is skipped (with a warning) and the next
+# candidate decides: the HOME registry knows the rival, so the push BLOCKS.
+mkdir -p "$SIBLING_OPS" && head -2 "$REG" > "$SIBLING_OPS/_registry.md"
+echo "compare with Rival Holdings Group's rollout" > knowledge-base/notes.md
+git add -A >/dev/null 2>&1; git commit -qm "foreign NAME behind a stub sibling registry" >/dev/null 2>&1
+expect_home "a stub sibling registry is skipped and the next candidate still BLOCKS" \
+  1 "$HOME_OPS" "$BASE" "5 cross-tenant" "no vault rows"
+reset_clean
+# With nothing real behind the stub, it is the no-registry case, not a clean pass.
+expect_home "a stub sibling registry alone BLOCKS as no registry" \
+  1 "$HOME_NONE" "$reg_base" "PUSH BLOCKED" "5+12 cross-tenant" "no vault rows"
+unplant_sibling
 
 # The core of the fix: no registry at any candidate is a BLOCK, and the message
 # has to name BOTH disabled dimensions — a reader who only hears about dim 5
