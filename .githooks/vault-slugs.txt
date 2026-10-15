@@ -12,11 +12,12 @@
 # resolution: it sits next to the hook on every clone, for every person. Path
 # resolution is precisely what failed on 2026-07-30.
 #
-# 26 vaults.
+# 27 vaults.
 
 cortex-acs
 cortex-andersen
 cortex-asphalt-doctor
+cortex-bioivt
 cortex-curalinc
 cortex-exclusive-flooring
 cortex-gendelman
